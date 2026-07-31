@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+# Never commit populated .env — use .env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# MyPy / Ruff / Pytest caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Local DB (dev only)
+*.db
+*.sqlite3
+
+# Generated evidence artefacts (written at test-run/CI time; uploaded as CI artefacts)
+tests/evidence/*.json
+tests/evidence/*.xml
+tests/evidence/*.txt
+# But keep the directory itself
+!tests/evidence/.gitkeep
+
+# Alembic
+alembic/versions/__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,1 +1,1 @@
-"""Package marker."""
+# app/core/__init__.py

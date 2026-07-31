@@ -1,0 +1,3 @@
+# tests/evidence/.gitkeep
+# This directory is created at test-run time and holds JSON gate evidence artefacts.
+# The directory itself is tracked; generated *.json files are gitignored.

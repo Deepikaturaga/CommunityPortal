@@ -1,0 +1,443 @@
+# =============================================================================
+# Security Gates CI Workflow — TASK-012 / PHASE-007
+# =============================================================================
+# Purpose
+# -------
+# Validate that BOTH security gates (SCA and secret-scanning) BLOCK a build
+# that contains:
+#   1. A dependency with a known CVE  (VER-015 — pip-audit gate)
+#   2. A hardcoded credential         (VER-018 — detect-secrets gate)
+#
+# The "validate-*-gate" jobs are DRY-RUN validation jobs: they assert that
+# the tool exits non-zero against the intentional fixture.  A zero exit from
+# either gate validation job means the gate is BROKEN and the workflow fails.
+#
+# The "audit-real-source" jobs are the PRODUCTION gates: they run the same
+# tools against the actual source tree and must exit ZERO to pass.
+#
+# Evidence artefacts are uploaded to GitHub Actions artefact storage.
+# =============================================================================
+
+name: Security Gates
+
+on:
+  push:
+    branches: ["main", "develop", "feature/**"]
+  pull_request:
+    branches: ["main", "develop"]
+  workflow_dispatch:          # allow manual dry-run at any time
+    inputs:
+      reason:
+        description: "Reason for manual trigger (e.g. TASK-012 dry-run)"
+        required: false
+        default: "Manual gate validation"
+
+permissions:
+  contents: read              # read-only checkout; no write access needed
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Non-sensitive dummy secret for tests — satisfies pydantic-settings validation.
+  # No real secret is stored here.
+  SECRET_KEY: "ci-pipeline-gate-test-not-a-real-secret-do-not-use-in-prod"
+
+defaults:
+  run:
+    working-directory: backend
+
+# =============================================================================
+# JOB 1 — Lint & format (fast early feedback)
+# =============================================================================
+jobs:
+  lint:
+    name: Lint & Format (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: ruff lint
+        run: python -m ruff check app/ tests/security/
+        # Deliberately exclude tests/fixtures/ from ruff lint here:
+        # it contains patterns that are meant to trigger security scanners.
+
+      - name: ruff format check
+        run: python -m ruff format --check app/ tests/security/
+
+  # =============================================================================
+  # JOB 2 — Type check (mypy)
+  # =============================================================================
+  typecheck:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: mypy
+        run: python -m mypy app/
+
+  # =============================================================================
+  # JOB 3 — VER-015: Validate SCA gate fires on vulnerable fixture
+  # =============================================================================
+  validate-sca-gate:
+    name: "VER-015 | SCA Gate Validation (pip-audit must BLOCK fixture)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install pip-audit
+        run: pip install "pip-audit>=2.7.3"
+
+      - name: "[DRY-RUN] Scan vulnerable fixture — MUST exit non-zero"
+        id: sca_gate_dry_run
+        # We WANT this to fail — gate validation asserts non-zero exit.
+        # `|| true` lets the step succeed so we can capture output;
+        # the assertion step below enforces the gate behaviour.
+        run: |
+          set +e
+          python -m pip_audit \
+            --requirement tests/fixtures/requirements-vulnerable.txt \
+            --strict \
+            --output json \
+            --no-deps \
+            > tests/evidence/ver-015-sca-raw.json 2>tests/evidence/ver-015-sca-stderr.txt
+          SCA_EXIT=$?
+          echo "sca_exit_code=${SCA_EXIT}" >> "$GITHUB_OUTPUT"
+          echo "pip-audit exit code: ${SCA_EXIT}"
+          cat tests/evidence/ver-015-sca-raw.json || true
+          set -e
+
+      - name: Assert gate blocked (exit code must be non-zero)
+        run: |
+          EXIT="${{ steps.sca_gate_dry_run.outputs.sca_exit_code }}"
+          if [ "${EXIT}" -eq "0" ]; then
+            echo "::error::GATE FAILURE (VER-015): pip-audit returned 0 (CLEAN) on a"
+            echo "::error::fixture that intentionally contains CVE-pinned packages."
+            echo "::error::The SCA gate is BROKEN — it would not catch real vulnerabilities."
+            exit 1
+          fi
+          echo "::notice::VER-015 PASS — pip-audit correctly exited ${EXIT} (BLOCKED) on vulnerable fixture."
+
+      - name: Create evidence directory
+        run: mkdir -p tests/evidence
+
+      - name: Write structured evidence record
+        run: |
+          python - <<'EOF'
+          import json, pathlib, datetime
+          ev = {
+              "criterion": "VER-015",
+              "gate": "sca",
+              "tool": "pip-audit",
+              "fixture": "tests/fixtures/requirements-vulnerable.txt",
+              "exit_code": ${{ steps.sca_gate_dry_run.outputs.sca_exit_code }},
+              "verdict": "BLOCKED",
+              "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+              "workflow_run_id": "${{ github.run_id }}",
+              "workflow_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          }
+          pathlib.Path("tests/evidence/ver-015-evidence.json").write_text(json.dumps(ev, indent=2))
+          print(json.dumps(ev, indent=2))
+          EOF
+
+      - name: Upload SCA gate evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ver-015-sca-gate-evidence
+          path: |
+            backend/tests/evidence/ver-015-*.json
+            backend/tests/evidence/ver-015-sca-stderr.txt
+          retention-days: 90
+
+  # =============================================================================
+  # JOB 4 — VER-015 (production): Real source must be CLEAN
+  # =============================================================================
+  audit-real-deps:
+    name: "VER-015 | SCA Audit — Real Dependencies (must be CLEAN)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install application + pip-audit
+        run: |
+          pip install -e ".[dev]"
+          pip install "pip-audit>=2.7.3"
+
+      - name: Audit installed packages (must exit 0)
+        run: |
+          python -m pip_audit \
+            --strict \
+            --output json \
+            --skip-editable \
+            > tests/evidence/sca-prod-audit.json
+          echo "::notice::SCA audit of real dependencies passed — no known vulnerabilities."
+
+      - name: Upload production SCA evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sca-production-audit
+          path: backend/tests/evidence/sca-prod-audit.json
+          retention-days: 90
+
+  # =============================================================================
+  # JOB 5 — VER-018: Validate secret-scan gate fires on secret fixture
+  # =============================================================================
+  validate-secret-scan-gate:
+    name: "VER-018 | Secret-Scan Gate Validation (detect-secrets must BLOCK fixture)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install detect-secrets
+        run: pip install "detect-secrets>=1.4.0"
+
+      - name: Create evidence directory
+        run: mkdir -p tests/evidence
+
+      - name: "[DRY-RUN] Scan secrets fixture — MUST find secrets"
+        id: secret_gate_dry_run
+        run: |
+          python -m detect_secrets scan tests/fixtures/secrets_fixture.py \
+            > tests/evidence/ver-018-raw-scan.json
+          SCAN_EXIT=$?
+          echo "scan_exit=${SCAN_EXIT}" >> "$GITHUB_OUTPUT"
+          echo "Raw scan output:"
+          cat tests/evidence/ver-018-raw-scan.json
+
+      - name: Assert gate blocked (findings count must be > 0)
+        run: |
+          python - <<'PYEOF'
+          import json, sys, pathlib
+
+          raw = pathlib.Path("tests/evidence/ver-018-raw-scan.json").read_text()
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError as e:
+              print(f"::error::GATE FAILURE (VER-018): detect-secrets produced non-JSON output: {e}")
+              sys.exit(1)
+
+          results = data.get("results", {})
+          total = sum(len(v) for v in results.values())
+
+          if total == 0:
+              print("::error::GATE FAILURE (VER-018): detect-secrets found ZERO secrets in the")
+              print("::error::fixture file that intentionally contains AWS key patterns, JWT")
+              print("::error::tokens, PEM headers, and high-entropy passwords.")
+              print("::error::The secret-scanning gate is BROKEN.")
+              sys.exit(1)
+
+          print(f"::notice::VER-018 PASS — detect-secrets found {total} secret(s) in fixture (BLOCKED).")
+          PYEOF
+
+      - name: Write structured evidence record
+        run: |
+          python - <<'PYEOF'
+          import json, pathlib, datetime
+
+          raw = pathlib.Path("tests/evidence/ver-018-raw-scan.json").read_text()
+          data = json.loads(raw)
+          results = data.get("results", {})
+          total = sum(len(v) for v in results.values())
+
+          ev = {
+              "criterion": "VER-018",
+              "gate": "secret-scan",
+              "tool": "detect-secrets",
+              "fixture": "tests/fixtures/secrets_fixture.py",
+              "findings_count": total,
+              "findings": results,
+              "verdict": "BLOCKED",
+              "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+              "workflow_run_id": "${{ github.run_id }}",
+              "workflow_run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          }
+          pathlib.Path("tests/evidence/ver-018-evidence.json").write_text(json.dumps(ev, indent=2))
+          print(json.dumps(ev, indent=2))
+          PYEOF
+
+      - name: Upload secret-scan gate evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ver-018-secret-scan-gate-evidence
+          path: backend/tests/evidence/ver-018-*.json
+          retention-days: 90
+
+  # =============================================================================
+  # JOB 6 — VER-018 (production): Real source must be CLEAN
+  # =============================================================================
+  audit-real-source-secrets:
+    name: "VER-018 | Secret Audit — Real Source (must be CLEAN)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install detect-secrets
+        run: pip install "detect-secrets>=1.4.0"
+
+      - name: Create evidence directory
+        run: mkdir -p tests/evidence
+
+      - name: Audit real source against baseline (must be CLEAN)
+        # Scans all source EXCEPT the fixture dir; new findings vs baseline = failure.
+        run: |
+          python -m detect_secrets scan \
+            --baseline .secrets.baseline \
+            --exclude-files "tests/fixtures/.*" \
+            app/ \
+            > tests/evidence/secret-prod-audit.json
+          python - <<'PYEOF'
+          import json, sys, pathlib
+          raw = pathlib.Path("tests/evidence/secret-prod-audit.json").read_text()
+          data = json.loads(raw)
+          results = data.get("results", {})
+          total = sum(len(v) for v in results.values())
+          if total > 0:
+              print(f"::error::Secret audit FAILED: {total} secret(s) detected in source (excluding fixtures).")
+              for fname, findings in results.items():
+                  for f in findings:
+                      print(f"::error file={fname},line={f.get('line_number','?')}::{f.get('type','unknown')} secret detected")
+              sys.exit(1)
+          print("::notice::Secret audit of real source passed — no secrets detected.")
+          PYEOF
+
+      - name: Upload production secret audit evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: secret-scan-production-audit
+          path: backend/tests/evidence/secret-prod-audit.json
+          retention-days: 90
+
+  # =============================================================================
+  # JOB 7 — Run pytest security gate tests
+  # =============================================================================
+  pytest-security-gates:
+    name: "TASK-012 | pytest security gate tests"
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install all dependencies
+        run: pip install -e ".[dev]" "pip-audit>=2.7.3" "detect-secrets>=1.4.0"
+
+      - name: Create evidence directory
+        run: mkdir -p tests/evidence
+
+      - name: Run security gate tests
+        env:
+          SECRET_KEY: ${{ env.SECRET_KEY }}
+        run: |
+          python -m pytest tests/security/test_pipeline_gates.py \
+            -m security_gate \
+            -v \
+            --tb=long \
+            --junitxml=tests/evidence/pytest-security-gates.xml
+
+      - name: Upload pytest evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-security-gate-results
+          path: |
+            backend/tests/evidence/pytest-security-gates.xml
+            backend/tests/evidence/ver-015-sca-gate.json
+            backend/tests/evidence/ver-018-secret-scan-gate.json
+          retention-days: 90
+
+  # =============================================================================
+  # JOB 8 — Gate summary (requires all gate jobs to pass)
+  # =============================================================================
+  gate-summary:
+    name: "PHASE-007 | Security Gates Summary"
+    runs-on: ubuntu-latest
+    needs:
+      - validate-sca-gate
+      - audit-real-deps
+      - validate-secret-scan-gate
+      - audit-real-source-secrets
+      - pytest-security-gates
+    if: always()
+    steps:
+      - name: Evaluate all gate results
+        run: |
+          echo "## Security Gate Results — PHASE-007 / TASK-012" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Gate | Criterion | Job | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-----------|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SCA (dry-run) | VER-015 | validate-sca-gate | ${{ needs.validate-sca-gate.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SCA (production) | VER-015 | audit-real-deps | ${{ needs.audit-real-deps.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secret scan (dry-run) | VER-018 | validate-secret-scan-gate | ${{ needs.validate-secret-scan-gate.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secret scan (production) | VER-018 | audit-real-source-secrets | ${{ needs.audit-real-source-secrets.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| pytest gates | VER-015+VER-018 | pytest-security-gates | ${{ needs.pytest-security-gates.result }} |" >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for result in \
+            "${{ needs.validate-sca-gate.result }}" \
+            "${{ needs.audit-real-deps.result }}" \
+            "${{ needs.validate-secret-scan-gate.result }}" \
+            "${{ needs.audit-real-source-secrets.result }}" \
+            "${{ needs.pytest-security-gates.result }}"; do
+            if [ "${result}" != "success" ]; then
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ "${FAILED}" -gt "0" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**${FAILED} gate(s) failed.** Pipeline BLOCKED." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**All gates passed. VER-015 and VER-018 evidence captured.**" >> "$GITHUB_STEP_SUMMARY"

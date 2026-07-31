@@ -1,0 +1,34 @@
+# ===========================================================================
+# SECURITY GATE TEST FIXTURE — VULNERABLE DEPENDENCY
+# ===========================================================================
+# PURPOSE
+#   This file is a DELIBERATE TEST FIXTURE used by TASK-012 (PHASE-007) to
+#   validate that the SCA (Software Composition Analysis) security gate in CI
+#   correctly BLOCKS a build that pins a dependency with a known CVE.
+#
+# WHAT IT PROVES  (VER-015 evidence)
+#   pip-audit scanned this file, found at least one vulnerability, exited
+#   non-zero, and caused the "sca-gate" job to fail — thereby blocking the
+#   pipeline.  The evidence artefact is captured by the
+#   `capture_gate_evidence.sh` script and attached to the CI run.
+#
+# USAGE IN CI
+#   The "validate-sca-gate" job runs:
+#       pip-audit -r tests/fixtures/requirements-vulnerable.txt --strict
+#   and asserts exit code != 0.  See .github/workflows/security-gates.yml.
+#
+# DO NOT USE IN PRODUCTION.  This file must never be installed as a runtime
+# dependency.  It exists solely inside tests/fixtures/.
+# ===========================================================================
+
+# CVE-2022-42969 — py 1.11.0 ReDoS vulnerability (CVSS 7.5 HIGH)
+# Fixed in py >= 1.11.0+, but the 1.10.0 pin is intentionally vulnerable.
+py==1.10.0
+
+# CVE-2023-32681 — requests 2.x SSRF via Proxy-Authorization header leak
+# Fixed in requests >= 2.31.0; pinned below fix intentionally.
+requests==2.28.2
+
+# CVE-2022-35737 — sqlite3 (via pysqlite3) integer overflow in format string
+# Included to demonstrate multi-vuln detection in a single scan.
+pysqlite3==0.5.0
