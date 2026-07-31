@@ -1,0 +1,19 @@
+[
+  "backend/.env.example",
+  "backend/app/__init__.py",
+  "backend/app/core/__init__.py",
+  "backend/app/core/config.py",
+  "backend/app/main.py",
+  "backend/app/middleware/__init__.py",
+  "backend/pyproject.toml",
+  "backend/services/__init__.py",
+  "backend/services/identity/__init__.py",
+  "backend/services/identity/cookie.py",
+  "backend/services/identity/dependencies.py",
+  "backend/services/identity/session_store.py",
+  "backend/tests/__init__.py",
+  "backend/tests/conftest.py",
+  "backend/tests/identity/test_cookie.py",
+  "backend/tests/identity/test_session_store.py",
+  "backend/tests/test_http_headers.py"
+]
