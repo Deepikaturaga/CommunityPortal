@@ -1,0 +1,20 @@
+[
+  ".github/workflows/security-gates.yml",
+  "backend/.env.example",
+  "backend/.gitignore",
+  "backend/.secrets.baseline",
+  "backend/app/__init__.py",
+  "backend/app/core/__init__.py",
+  "backend/app/core/config.py",
+  "backend/app/main.py",
+  "backend/conftest.py",
+  "backend/pyproject.toml",
+  "backend/scripts/capture_gate_evidence.sh",
+  "backend/tests/__init__.py",
+  "backend/tests/evidence/.gitkeep",
+  "backend/tests/fixtures/__init__.py",
+  "backend/tests/fixtures/requirements-vulnerable.txt",
+  "backend/tests/fixtures/secrets_fixture.py",
+  "backend/tests/security/__init__.py",
+  "backend/tests/security/test_pipeline_gates.py"
+]
