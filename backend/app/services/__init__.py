@@ -1,3 +1,1 @@
-```
-
-### `backend/app/services/admin/__init__.py`
+# services package

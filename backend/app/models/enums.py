@@ -1,14 +1,18 @@
-"""User role enumeration – five canonical roles."""
 from __future__ import annotations
 
 import enum
 
 
-class UserRole(str, enum.Enum):
-    """Five roles used across profile / admin / taxonomy authorization."""
+class DiscussionStatus(str, enum.Enum):
+    """Lifecycle status of a top-level discussion thread."""
 
-    SUPERADMIN = "superadmin"
-    ADMIN = "admin"
-    EDITOR = "editor"
-    CONTRIBUTOR = "contributor"
-    VIEWER = "viewer"
+    OPEN = "open"
+    LOCKED = "locked"   # No new replies allowed (AC-012)
+    HIDDEN = "hidden"   # Not surfaced in listings (AC-013)
+
+
+class ReplyStatus(str, enum.Enum):
+    """Visibility/moderation status of a single reply."""
+
+    VISIBLE = "visible"
+    HIDDEN = "hidden"   # Soft-hidden by moderator (AC-013)

@@ -1,49 +1,96 @@
-"""Initial schema – users table with role column.
+"""Initial schema — discussions and replies tables.
 
 Revision ID: 0001_initial
-Revises:
-Create Date: 2024-01-01 00:00:00
+Revises: None
+Create Date: 2025-01-01 00:00:00.000000
 """
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0001_initial"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Enums
+    discussionstatus = sa.Enum("open", "locked", "hidden", name="discussionstatus")
+    replystatus = sa.Enum("visible", "hidden", name="replystatus")
+    discussionstatus.create(op.get_bind(), checkfirst=True)
+    replystatus.create(op.get_bind(), checkfirst=True)
+
     op.create_table(
-        "users",
-        sa.Column("id", sa.String(36), nullable=False),
-        sa.Column("email", sa.String(255), nullable=False),
-        sa.Column("hashed_password", sa.String(255), nullable=False),
+        "discussions",
+        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("title", sa.String(500), nullable=False),
+        sa.Column("body", sa.Text(), nullable=False),
+        sa.Column("author_id", sa.Integer(), nullable=False),
         sa.Column(
-            "role",
-            sa.Enum(
-                "admin", "moderator", "contributor", "viewer",
-                name="userrole",
-            ),
+            "status",
+            sa.Enum("open", "locked", "hidden", name="discussionstatus"),
+            nullable=False,
+            server_default="open",
+        ),
+        sa.Column("is_hidden", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+    )
+    op.create_index("ix_discussions_id", "discussions", ["id"])
+    op.create_index("ix_discussions_author_id", "discussions", ["author_id"])
+
+    op.create_table(
+        "replies",
+        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column(
+            "discussion_id",
+            sa.Integer(),
+            sa.ForeignKey("discussions.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("is_active", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
+        sa.Column("author_id", sa.Integer(), nullable=False),
+        sa.Column("body", sa.Text(), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum("visible", "hidden", name="replystatus"),
+            nullable=False,
+            server_default="visible",
+        ),
+        sa.Column("is_hidden", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
-    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
+    op.create_index("ix_replies_id", "replies", ["id"])
+    op.create_index("ix_replies_discussion_id", "replies", ["discussion_id"])
+    op.create_index("ix_replies_author_id", "replies", ["author_id"])
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_users_email"), table_name="users")
-    op.drop_table("users")
-    # SQLite does not support DROP TYPE; skip for non-postgres
-    from alembic import op as _op  # noqa: PLC0415
-    bind = _op.get_bind()
-    if bind.dialect.name == "postgresql":
-        bind.execute(sa.text("DROP TYPE IF EXISTS userrole"))
+    op.drop_table("replies")
+    op.drop_table("discussions")
+    op.execute("DROP TYPE IF EXISTS replystatus")
+    op.execute("DROP TYPE IF EXISTS discussionstatus")
