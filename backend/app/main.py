@@ -1,24 +1,24 @@
-"""FastAPI application entry-point."""
-
+from contextlib import asynccontextmanager
+"""ASGI application entrypoint."""
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.core.config import get_settings
-from app.core.database import engine
-from app.routers.media_router import router as media_router
+from app.core.config import settings
+from app.core.database import Base, engine
+from app.routers.admin_role_router import router as admin_roles_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Validate settings at startup — raises on bad config
-    get_settings()
+    # Create tables (dev/test only – production uses Alembic migrations)
+    if settings.environment in {"development", "test"}:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
-    # Graceful shutdown: dispose the async engine connection pool
     await engine.dispose()
 
 
@@ -26,31 +26,35 @@ app = FastAPI(
     title="Backend API",
     version="0.1.0",
     lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/docs" if settings.environment != "production" else None,
+    redoc_url=None,
 )
 
-# ── Global exception handlers ──────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Global exception handlers – never leak internals (OWASP A05)
+# ---------------------------------------------------------------------------
 
 
 @app.exception_handler(Exception)
-async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Return a generic 500 without leaking internals (OWASP A05)."""
+async def _unhandled(_request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
-        status_code=500,
-        content={"detail": "An unexpected error occurred. Please try again later."},
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An unexpected error occurred."},
     )
 
 
-# ── Routers ────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
 
-app.include_router(media_router, prefix="/api/v1")
+app.include_router(admin_roles_router, prefix="/api/v1")
 
 
-# ── Health / readiness ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
 
 
-@app.get("/health", tags=["ops"], include_in_schema=False)
+@app.get("/health", tags=["ops"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
