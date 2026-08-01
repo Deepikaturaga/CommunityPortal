@@ -1,13 +1,6 @@
-"""Central model registry — import here so Alembic autogenerate sees every table."""
+"""Models package – import all ORM models so Alembic autogenerate picks them up."""
+from app.models.enums import UserRole
+from app.models.taxonomy import TaxonomyTerm, TaxonomyVocabulary
+from app.models.user import User
 
-from app.models.content import Content  # noqa: F401  stub FK target
-from app.models.taxonomy import Category, Tag, TaxonomyStatus, content_category, content_tag  # noqa: F401
-
-__all__ = [
-    "Content",
-    "Category",
-    "Tag",
-    "TaxonomyStatus",
-    "content_category",
-    "content_tag",
-]
+__all__ = ["User", "UserRole", "TaxonomyVocabulary", "TaxonomyTerm"]

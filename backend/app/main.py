@@ -1,76 +1,68 @@
-"""Canonical ASGI entrypoint — backend/app/main.py"""
-
+"""ASGI application entry-point."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncGenerator
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
-from app.core.config import settings
-from app.routers.admin.taxonomy_router import router as taxonomy_router
+from app.core.config import get_settings
+from app.core.database import create_all_tables
+from app.core.exceptions import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    conflict_handler,
+    forbidden_handler,
+    not_found_handler,
+)
+from app.routers.admin_router import router as admin_router
+from app.routers.auth_router import router as auth_router
+from app.routers.profile_router import router as profile_router
+from app.routers.taxonomy_router import router as taxonomy_router
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Startup: nothing needed for basic boot; connection pool is lazy.
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Dev/test convenience – create tables on startup
+    await create_all_tables()
     yield
-    # Shutdown: dispose engine when full DB module is wired.
 
 
-app = FastAPI(
-    title="CMS API",
-    version="0.1.0",
-    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
-    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
-    lifespan=lifespan,
-)
+def create_app() -> FastAPI:
+    settings = get_settings()
 
-# ---------------------------------------------------------------------------
-# CORS — tighten origins in production via config
-# ---------------------------------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"] if settings.ENVIRONMENT != "production" else [],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------------------------------------------------------------------
-# Global exception handlers — never leak internal detail to callers
-# ---------------------------------------------------------------------------
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    # Log exc here with structured logger (observability requirement)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An unexpected error occurred."},
+    app = FastAPI(
+        title="Backend API",
+        version="1.0.0",
+        lifespan=lifespan,
     )
 
+    # CORS – tighten in production
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
+    # Global exception handlers
+    app.add_exception_handler(NotFoundError, not_found_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ForbiddenError, forbidden_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ConflictError, conflict_handler)  # type: ignore[arg-type]
 
-app.include_router(taxonomy_router, prefix="/api/v1")
+    api_prefix = "/api/v1"
+    app.include_router(auth_router, prefix=api_prefix)
+    app.include_router(profile_router, prefix=api_prefix)
+    app.include_router(admin_router, prefix=api_prefix)
+    app.include_router(taxonomy_router, prefix=api_prefix)
+
+    @app.get("/health", tags=["ops"])
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
 
 
-# ---------------------------------------------------------------------------
-# Health / readiness
-# ---------------------------------------------------------------------------
-
-
-@app.get("/healthz", tags=["ops"], include_in_schema=False)
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/readyz", tags=["ops"], include_in_schema=False)
-async def readiness() -> dict[str, str]:
-    # Extend with a DB ping when full DB module is wired.
-    return {"status": "ready"}
+app = create_app()

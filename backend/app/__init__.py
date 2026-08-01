@@ -1,3 +1,1 @@
-```
-
-### `backend/app/core/__init__.py`
+"""App package."""

@@ -1,59 +1,27 @@
-"""Auth dependencies — stub until the full auth module (PHASE-011) is wired in.
-
-In production this verifies a JWT, loads the user from DB, and enforces role.
-The `require_admin` dependency raises 403 for non-admin callers.
-"""
-
+"""JWT token utilities."""
 from __future__ import annotations
 
-import enum
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-class UserRole(str, enum.Enum):
-    admin = "admin"
-    editor = "editor"
-    viewer = "viewer"
+from app.core.config import get_settings
 
 
-class CurrentUser:
-    def __init__(self, user_id: int, role: UserRole) -> None:
-        self.user_id = user_id
-        self.role = role
-
-    @property
-    def is_admin(self) -> bool:
-        return self.role == UserRole.admin
-
-
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> CurrentUser:
-    """Stub: accept any bearer token as an admin for development.
-
-    Replace this body with real JWT validation when PHASE-011 auth is available.
-    """
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    # TODO(PHASE-011): validate JWT, load user from DB
-    return CurrentUser(user_id=1, role=UserRole.admin)
+def create_access_token(subject: str, extra_claims: dict[str, Any] | None = None) -> str:
+    settings = get_settings()
+    expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
+    payload: dict[str, Any] = {"sub": subject, "exp": expire}
+    if extra_claims:
+        payload.update(extra_claims)
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
-async def require_admin(
-    current_user: Annotated[CurrentUser, Depends(get_current_user)],
-) -> CurrentUser:
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrator role required.",
-        )
-    return current_user
+def decode_access_token(token: str) -> dict[str, Any]:
+    """Decode and verify token; raises JWTError on failure."""
+    settings = get_settings()
+    return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+
+
+__all__ = ["create_access_token", "decode_access_token", "JWTError"]
