@@ -1,0 +1,17 @@
+[
+  "conftest.py",
+  "pyproject.toml",
+  "src/__init__.py",
+  "src/archpilot/__init__.py",
+  "src/archpilot/api/__init__.py",
+  "src/archpilot/api/cognito_auth.py",
+  "src/archpilot/api/routers/__init__.py",
+  "src/archpilot/api/routers/discussion_router.py",
+  "src/archpilot/api/runtime_server_patch.py",
+  "src/archpilot/services/__init__.py",
+  "src/archpilot/services/discussion/__init__.py",
+  "src/archpilot/services/discussion/events.py",
+  "src/archpilot/services/discussion/test_event_emission.py",
+  "src/archpilot/services/discussion/test_threads.py",
+  "src/archpilot/services/discussion/threads.py"
+]
