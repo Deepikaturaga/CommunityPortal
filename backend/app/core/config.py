@@ -1,8 +1,6 @@
-"""Application configuration — validated at startup via pydantic-settings."""
-
 from __future__ import annotations
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,34 +12,27 @@ class Settings(BaseSettings):
     )
 
     # ── Database ──────────────────────────────────────────────────────────────
-    database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/app",
-        description="Async SQLAlchemy database URL",
+    database_url: PostgresDsn = Field(
+        default=...,
+        description="Async PostgreSQL DSN (asyncpg driver)",
     )
 
-    # ── Search backend ────────────────────────────────────────────────────────
-    search_host: AnyHttpUrl = Field(
-        default="http://localhost:9200",  # type: ignore[assignment]
-        description="OpenSearch / Elasticsearch base URL",
-    )
-    search_username: str = Field(default="admin")
-    search_password: SecretStr = Field(default=SecretStr("admin"))
-    search_use_ssl: bool = Field(default=False)
-    search_verify_certs: bool = Field(default=False)
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    secret_key: str = Field(default=..., min_length=32)
+    algorithm: str = Field(default="HS256")
+    access_token_expire_minutes: int = Field(default=30, gt=0)
 
-    # ── Reconciliation job ────────────────────────────────────────────────────
-    reindex_batch_size: int = Field(default=500, gt=0, le=10_000)
-    reindex_scroll_timeout: str = Field(default="5m")
-    reindex_max_retries: int = Field(default=3, ge=0)
-
-    # ── Scheduler (APScheduler) ────────────────────────────────────────────────
-    reindex_cron_enabled: bool = Field(default=False)
-    reindex_cron_hour: int = Field(default=2, ge=0, le=23)
-    reindex_cron_minute: int = Field(default=0, ge=0, le=59)
-
-    # ── General ────────────────────────────────────────────────────────────────
-    environment: str = Field(default="development")
+    # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO")
+
+    @field_validator("log_level")
+    @classmethod
+    def _log_level_upper(cls, v: str) -> str:
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in allowed:
+            raise ValueError(f"log_level must be one of {allowed}")
+        return upper
 
 
 settings = Settings()

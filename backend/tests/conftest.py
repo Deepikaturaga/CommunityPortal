@@ -1,67 +1,38 @@
-"""Shared pytest fixtures."""
-
+"""Shared pytest fixtures for the notification preference API tests."""
 from __future__ import annotations
-
-import uuid
 from collections.abc import AsyncGenerator
 
-import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from httpx import ASGITransport, AsyncClient
+from jose import jwt
 
-from app.models.base import Base
-from app.models.searchable_record import SearchableRecord
-from tests.doubles.in_memory_search import InMemorySearchClient
-
-# ── In-memory SQLite engine for tests ─────────────────────────────────────────
-
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+from app.core.config import settings
+from app.main import app
 
 
-@pytest_asyncio.fixture()
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
-    engine = create_async_engine(TEST_DB_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+# ── JWT helpers ────────────────────────────────────────────────────────────────
 
-    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-    async with factory() as session:
-        yield session
+def make_token(user_id: str, secret: str | None = None) -> str:
+    import time
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
-
-
-@pytest.fixture()
-def search_client() -> InMemorySearchClient:
-    return InMemorySearchClient()
-
-
-# ── Factory helpers ────────────────────────────────────────────────────────────
-
-
-async def make_record(
-    session: AsyncSession,
-    *,
-    index_name: str = "products",
-    document_type: str = "product",
-    payload: dict | None = None,
-    is_active: bool = True,
-    title: str | None = None,
-) -> SearchableRecord:
-    record = SearchableRecord(
-        id=str(uuid.uuid4()),
-        index_name=index_name,
-        document_type=document_type,
-        payload=payload or {"name": f"record-{uuid.uuid4().hex[:6]}"},
-        title=title,
-        is_active=is_active,
+    secret = secret or settings.secret_key
+    now = int(time.time())
+    return jwt.encode(
+        {"sub": user_id, "exp": now + 3600},
+        secret,
+        algorithm=settings.algorithm,
     )
-    session.add(record)
-    await session.flush()
-    return record
+
+
+def auth_headers(user_id: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {make_token(user_id)}"}
+
+
+# ── In-process async HTTP client ───────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def async_client() -> AsyncGenerator[AsyncClient, None]:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
