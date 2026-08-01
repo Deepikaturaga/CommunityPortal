@@ -1,0 +1,22 @@
+[
+  ".github/workflows/phase-024-discussion-tests.yml",
+  "frontend/.env.example",
+  "frontend/jest.config.ts",
+  "frontend/next.config.js",
+  "frontend/package.json",
+  "frontend/src/app/layout.tsx",
+  "frontend/src/app/page.tsx",
+  "frontend/src/lib/api/discussionApi.ts",
+  "frontend/src/lib/api/types.ts",
+  "frontend/tests/discussion/README.md",
+  "frontend/tests/discussion/mocks/handlers.ts",
+  "frontend/tests/discussion/mocks/server.ts",
+  "frontend/tests/discussion/moderation.test.ts",
+  "frontend/tests/discussion/moderationRoleGating.test.ts",
+  "frontend/tests/discussion/rateLimit.test.ts",
+  "frontend/tests/discussion/replyCreation.test.ts",
+  "frontend/tests/discussion/threadCreation.test.ts",
+  "frontend/tests/discussion/threadDetail.test.ts",
+  "frontend/tests/discussion/threadListing.test.ts",
+  "frontend/tsconfig.json"
+]
