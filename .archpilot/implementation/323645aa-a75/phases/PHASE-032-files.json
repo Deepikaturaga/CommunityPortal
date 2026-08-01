@@ -1,0 +1,23 @@
+[
+  "frontend/jest.config.ts",
+  "frontend/next-env.d.ts",
+  "frontend/next.config.js",
+  "frontend/package.json",
+  "frontend/src/app/layout.tsx",
+  "frontend/src/app/page.tsx",
+  "frontend/src/lib/kb/api.ts",
+  "frontend/src/lib/kb/index.ts",
+  "frontend/src/lib/kb/service.ts",
+  "frontend/src/lib/kb/types.ts",
+  "frontend/src/lib/kb/validation.ts",
+  "frontend/tests/kb/ac-022-authoring.test.ts",
+  "frontend/tests/kb/ac-023-approval.test.ts",
+  "frontend/tests/kb/ac-024-revisions.test.ts",
+  "frontend/tests/kb/ac-025-publish-archive.test.ts",
+  "frontend/tests/kb/ac-026-listing.test.ts",
+  "frontend/tests/kb/api-client.test.ts",
+  "frontend/tests/kb/fixtures.ts",
+  "frontend/tests/kb/msw-handlers.ts",
+  "frontend/tests/setup.ts",
+  "frontend/tsconfig.json"
+]
