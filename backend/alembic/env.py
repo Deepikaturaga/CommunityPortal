@@ -1,19 +1,22 @@
-"""Alembic environment – async SQLAlchemy."""
+"""Alembic async env for SQLAlchemy 2.0 async engine."""
+
 from __future__ import annotations
 
 import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.pool import NullPool
 
+# Import all models so autogenerate sees their metadata
 from app.core.config import settings
 from app.core.database import Base
-
-# Import all models so their metadata is registered
-import app.models.user  # noqa: F401
+import app.models  # noqa: F401  — registers all tables on Base.metadata
 
 config = context.config
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -21,7 +24,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = settings.database_url
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -39,7 +42,11 @@ def do_run_migrations(connection):  # type: ignore[no-untyped-def]
 
 
 async def run_async_migrations() -> None:
-    connectable = create_async_engine(settings.database_url)
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=NullPool,
+    )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

@@ -1,44 +1,59 @@
-"""JWT creation/verification utilities.
+"""Auth dependencies — stub until the full auth module (PHASE-011) is wired in.
 
-Roles are intentionally NOT embedded in the token payload.
-The token carries only the user's stable `sub` (user_id).
-The caller re-fetches the current role from the database on every request,
-so any admin-driven role change takes effect immediately without re-login.
-
-See AC-032.1 / AC-032.2.
+In production this verifies a JWT, loads the user from DB, and enforces role.
+The `require_admin` dependency raises 403 for non-admin callers.
 """
+
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import Any
+import enum
+from typing import Annotated
 
-from jose import JWTError, jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.config import settings
-
-_ALGORITHM = settings.algorithm
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def create_access_token(user_id: str, expires_delta: timedelta | None = None) -> str:
-    """Return a signed JWT containing *only* the subject (user_id).
+class UserRole(str, enum.Enum):
+    admin = "admin"
+    editor = "editor"
+    viewer = "viewer"
 
-    Role is deliberately excluded from the payload so that role changes
-    propagate on the very next request without requiring a new token.
+
+class CurrentUser:
+    def __init__(self, user_id: int, role: UserRole) -> None:
+        self.user_id = user_id
+        self.role = role
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == UserRole.admin
+
+
+async def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> CurrentUser:
+    """Stub: accept any bearer token as an admin for development.
+
+    Replace this body with real JWT validation when PHASE-011 auth is available.
     """
-    expire = datetime.now(UTC) + (
-        expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
-    )
-    payload: dict[str, Any] = {"sub": user_id, "exp": expire, "iat": datetime.now(UTC)}
-    return jwt.encode(payload, settings.secret_key, algorithm=_ALGORITHM)
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # TODO(PHASE-011): validate JWT, load user from DB
+    return CurrentUser(user_id=1, role=UserRole.admin)
 
 
-def decode_access_token(token: str) -> str:
-    """Decode and verify *token*; return the user_id (``sub`` claim).
-
-    Raises :class:`jose.JWTError` on invalid / expired tokens.
-    """
-    data = jwt.decode(token, settings.secret_key, algorithms=[_ALGORITHM])
-    user_id: str | None = data.get("sub")
-    if not user_id:
-        raise JWTError("Missing 'sub' claim")
-    return user_id
+async def require_admin(
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+) -> CurrentUser:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator role required.",
+        )
+    return current_user
