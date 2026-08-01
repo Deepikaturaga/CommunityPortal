@@ -1,0 +1,22 @@
+[
+  "backend/.env",
+  "backend/app/core/config.py",
+  "backend/app/core/database.py",
+  "backend/app/core/security.py",
+  "backend/app/main.py",
+  "backend/app/models/base.py",
+  "backend/app/models/content.py",
+  "backend/app/models/kb_article.py",
+  "backend/app/models/moderation.py",
+  "backend/app/models/user.py",
+  "backend/app/services/kb/__init__.py",
+  "backend/app/services/kb/approval.py",
+  "backend/app/services/kb/events.py",
+  "backend/app/services/kb/router.py",
+  "backend/app/services/kb/schemas.py",
+  "backend/app/services/kb/visibility.py",
+  "backend/pytest.ini",
+  "backend/tests/__init__.py",
+  "backend/tests/test_kb_approval.py",
+  "backend/tests/test_kb_visibility.py"
+]
