@@ -3,74 +3,66 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+import structlog
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import settings
-from app.core.database import engine
-from app.models.base import Base
-import app.models.content  # noqa: F401  — register mapper
-import app.models.kb_article  # noqa: F401  — register mapper
-import app.models.moderation  # noqa: F401  — register mapper
-import app.models.user  # noqa: F401  — register mapper
-from app.services.kb.router import router as kb_router
-from app.services.kb.visibility import router as kb_visibility_router
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.services.event_bus import get_event_bus
+from app.services.search.indexer import create_indexer
+from app.services.search.subscriber import register_search_subscriber
 
-# Optional routers implemented in sibling phases; safe to skip when absent.
-try:
-    from app.services.moderation.router import router as moderation_router  # type: ignore[import]
-
-    _has_moderation = True
-except ModuleNotFoundError:
-    _has_moderation = False
-
-try:
-    from app.services.posts.router import router as posts_router  # type: ignore[import]
-
-    _has_posts = True
-except ModuleNotFoundError:
-    _has_posts = False
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
-    if settings.ENVIRONMENT in ("development", "test"):
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    cfg = get_settings()
+    configure_logging(cfg.log_level)
+
+    if cfg.environment == "production" and (
+        cfg.secret_key.get_secret_value() == "change-me-in-production"
+    ):
+        raise RuntimeError("SECRET_KEY must be changed in production")
+
+    # Bootstrap search indexer and wire subscriber.
+    indexer = await create_indexer(cfg)
+    bus = get_event_bus()
+    register_search_subscriber(bus, indexer)
+
+    logger.info("app.startup", environment=cfg.environment)
     yield
-    await engine.dispose()
+
+    # Graceful shutdown.
+    await indexer._os.close()
+    logger.info("app.shutdown")
 
 
-app = FastAPI(title="Moderation Service", version="0.1.0", lifespan=lifespan)
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    import logging
-
-    logging.getLogger(__name__).exception(
-        "Unhandled error: %s %s", request.method, request.url
-    )
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"},
+def create_app() -> FastAPI:
+    cfg = get_settings()
+    app = FastAPI(
+        title="Content API",
+        version="1.0.0",
+        docs_url="/api/docs" if cfg.environment != "production" else None,
+        redoc_url="/api/redoc" if cfg.environment != "production" else None,
+        lifespan=lifespan,
     )
 
-
-if _has_moderation:
-    app.include_router(
-        moderation_router,  # type: ignore[possibly-undefined]
-        prefix="/api/v1",
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if cfg.environment == "development" else [],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
-if _has_posts:
-    app.include_router(
-        posts_router,  # type: ignore[possibly-undefined]
-        prefix="/api/v1",
-    )
-app.include_router(kb_router, prefix="/api/v1")
-app.include_router(kb_visibility_router, prefix="/api/v1")
+
+    # ── Routers ────────────────────────────────────────────────────────────────
+    from app.routers import health  # noqa: PLC0415
+
+    app.include_router(health.router, prefix="/api")
+
+    return app
 
 
-@app.get("/health", tags=["ops"], include_in_schema=False)
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app()

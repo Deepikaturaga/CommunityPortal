@@ -1,1 +1,3 @@
-"""Schemas sub-package."""
+```
+
+### `backend/app/schemas/content_event.py`

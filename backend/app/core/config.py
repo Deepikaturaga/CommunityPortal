@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,16 +14,40 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-    DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
-    SECRET_KEY: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    ENVIRONMENT: str = "development"
-    # IF-017 event emission feature flag
-    KB_EVENTS_ENABLED: bool = True
+
+    # ── App ────────────────────────────────────────────────────────────────────
+    environment: Literal["development", "test", "production"] = "development"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # ── Database ───────────────────────────────────────────────────────────────
+    database_url: str = Field(
+        default="postgresql+asyncpg://user:password@localhost:5432/appdb"
+    )
+
+    # ── OpenSearch ─────────────────────────────────────────────────────────────
+    opensearch_url: str = Field(default="http://localhost:9200")
+    opensearch_index_prefix: str = Field(default="content")
+    opensearch_username: str = Field(default="")
+    opensearch_password: SecretStr = Field(default=SecretStr(""))
+
+    # ── Security ───────────────────────────────────────────────────────────────
+    secret_key: SecretStr = Field(default=SecretStr("change-me-in-production"))
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def _secret_key_not_default_in_prod(cls, v: SecretStr, info: object) -> SecretStr:
+        # Validate at startup; actual enforcement happens in lifespan.
+        return v
 
     @property
-    def db_echo(self) -> bool:
-        return self.ENVIRONMENT == "development"
+    def opensearch_index_content(self) -> str:
+        return f"{self.opensearch_index_prefix}_items"
+
+    @property
+    def opensearch_index_processed_events(self) -> str:
+        return f"{self.opensearch_index_prefix}_processed_events"
 
 
-settings = Settings()  # type: ignore[call-arg]
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

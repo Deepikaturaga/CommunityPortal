@@ -1,3 +1,3 @@
 ```
 
-### `backend/app/services/posts/__init__.py`
+### `backend/app/services/event_bus.py`

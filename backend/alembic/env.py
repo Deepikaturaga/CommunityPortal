@@ -1,4 +1,6 @@
-"""Alembic environment — async SQLAlchemy (asyncpg driver)."""
+"""Alembic environment configuration for async SQLAlchemy."""
+from __future__ import annotations
+
 import asyncio
 from logging.config import fileConfig
 
@@ -7,47 +9,49 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# Import all models so their metadata is registered before autogenerate
-from app.core.database import Base  # noqa: F401
-import app.auth.models  # noqa: F401
-import app.kb.article_models  # noqa: F401
+from app.core.config import get_settings
+from app.core.database import Base
+
+# Import all models so Alembic can see their metadata.
+import app.models.content  # noqa: F401
 
 config = context.config
-if config.config_file_name is not None:
+if config.config_file_name:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
-
-def get_url() -> str:
-    # Settings override the ini placeholder at runtime
-    from app.core.config import get_settings
-    return get_settings().database_url
+# Override sqlalchemy.url from app settings so .env is authoritative.
+cfg = get_settings()
+config.set_main_option("sqlalchemy.url", cfg.database_url)
 
 
 def run_migrations_offline() -> None:
-    url = get_url()
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_async_migrations() -> None:
-    cfg = config.get_section(config.config_ini_section, {})
-    cfg["sqlalchemy.url"] = get_url()
     connectable = async_engine_from_config(
-        cfg,
+        config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
