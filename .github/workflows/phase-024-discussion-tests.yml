@@ -1,0 +1,50 @@
+name: Discussion & Moderation Test Suite (PHASE-024)
+
+on:
+  push:
+    paths:
+      - "frontend/src/lib/api/**"
+      - "frontend/tests/discussion/**"
+  pull_request:
+    paths:
+      - "frontend/src/lib/api/**"
+      - "frontend/tests/discussion/**"
+
+jobs:
+  discussion-tests:
+    name: "VER-002 / VER-020 — Discussion & Moderation Tests"
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run discussion/moderation test suite (VER-002, VER-020)
+        run: npm run test:ci
+        env:
+          CI: true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discussion-test-coverage
+          path: frontend/coverage/
+          retention-days: 30
