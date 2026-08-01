@@ -1,0 +1,12 @@
+[
+  "backend/alembic/versions/0005_kb_revisions.py",
+  "backend/app/api/routes/kb_revisions.py",
+  "backend/app/api/routes/kb_revisions_registration_note.py",
+  "backend/app/models/kb_revision.py",
+  "backend/app/schemas/kb_revision_schema.py",
+  "backend/app/services/kb/__init__.py",
+  "backend/pytest.ini",
+  "backend/tests/__init__.py",
+  "backend/tests/services/kb/conftest.py",
+  "backend/tests/services/kb/test_revisions.py"
+]
