@@ -1,47 +1,50 @@
-// jest.config.ts
 import type { Config } from "jest";
+import nextJest from "next/jest.js";
 
-const config: Config = {
-  preset: "ts-jest",
+const createJestConfig = nextJest({
+  // Points to the Next.js app root so next/jest loads next.config.js + .env
+  dir: "./",
+});
+
+const customConfig: Config = {
+  displayName: "frontend",
   testEnvironment: "jsdom",
-  rootDir: ".",
-  roots: ["<rootDir>/src", "<rootDir>/tests"],
-  moduleNameMapper: {
-    "^@/(.*)$": "<rootDir>/src/$1",
-  },
-  transform: {
-    "^.+\\.(ts|tsx)$": [
-      "ts-jest",
-      {
-        tsconfig: {
-          jsx: "react-jsx",
-          strict: true,
-          esModuleInterop: true,
-          moduleResolution: "node",
-          module: "commonjs",
-          types: ["jest", "@testing-library/jest-dom"],
-        },
-      },
-    ],
-  },
-  // Runs after the test framework (jest-circus) is installed in the environment.
-  // Used to extend expect with @testing-library/jest-dom matchers.
-  setupFilesAfterFramework: ["<rootDir>/tests/setup.ts"],
-  testMatch: ["**/*.test.ts", "**/*.test.tsx"],
-  globals: {},
+
+  // ── Test discovery ──────────────────────────────────────────────────────
+  testMatch: [
+    "<rootDir>/tests/**/*.test.{ts,tsx}",
+    "<rootDir>/src/**/*.test.{ts,tsx}",
+  ],
+
+  // ── Coverage ────────────────────────────────────────────────────────────
   collectCoverageFrom: [
-    "src/lib/kb/**/*.ts",
-    "src/components/kb/**/*.tsx",
+    "src/app/admin/dashboard/**/*.{ts,tsx}",
+    "src/components/admin/dashboard/**/*.{ts,tsx}",
+    "src/middleware/**/*.{ts,tsx}",
     "!**/*.d.ts",
   ],
   coverageThreshold: {
     global: {
       branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80,
+      functions: 85,
+      lines: 85,
+      statements: 85,
     },
   },
+
+  // ── Module aliases ───────────────────────────────────────────────────────
+  moduleNameMapper: {
+    "^next/navigation$":
+      "<rootDir>/tests/admin-dashboard/__mocks__/next-navigation.ts",
+    "^next/headers$":
+      "<rootDir>/tests/admin-dashboard/__mocks__/next-headers.ts",
+    "^@/(.*)$": "<rootDir>/src/$1",
+    "\\.module\\.(css|scss|sass)$": "identity-obj-proxy",
+    "\\.(css|scss|sass)$": "identity-obj-proxy",
+  },
+
+  // ── Setup ────────────────────────────────────────────────────────────────
+  setupFilesAfterEnv: ["<rootDir>/tests/setup.ts"],
 };
 
-export default config;
+export default createJestConfig(customConfig);
