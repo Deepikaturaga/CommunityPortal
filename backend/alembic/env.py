@@ -1,36 +1,36 @@
-"""Alembic env.py — async SQLAlchemy 2.0 pattern."""
+"""Alembic env — async SQLAlchemy setup for autogenerate."""
+
+from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
+# ── Import all models so autogenerate can detect them ─────────────────────────
+import app.models  # noqa: F401 — side-effect import registers metadata
+from app.core.database import Base
 
-# Import Base + all models so autogenerate sees metadata
-from app.core.database import Base  # noqa: F401
-import app.models  # noqa: F401  registers all ORM models
-
-# Alembic Config object
+# ── Alembic Config ─────────────────────────────────────────────────────────────
 config = context.config
 
-# Logging
+# Override sqlalchemy.url from environment (set in CI / docker-compose)
+database_url = os.environ.get("DATABASE_URL") or os.environ.get("TEST_DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
 
-def get_url() -> str:
-    from app.core.config import settings  # noqa: PLC0415
-
-    return settings.database_url
-
-
 def run_migrations_offline() -> None:
-    url = get_url()
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -53,10 +53,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    cfg = config.get_section(config.config_ini_section, {})
-    cfg["sqlalchemy.url"] = get_url()
     connectable = async_engine_from_config(
-        cfg,
+        config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

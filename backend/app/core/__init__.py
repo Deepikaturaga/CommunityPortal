@@ -1,1 +1,1 @@
-"""Package root."""
+"""Core package init."""

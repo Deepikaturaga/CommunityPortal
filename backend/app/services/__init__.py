@@ -1,1 +1,1 @@
-"""Package root."""
+"""Services package."""

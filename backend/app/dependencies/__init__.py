@@ -1,1 +1,1 @@
-"""Package root."""
+"""Dependencies package."""

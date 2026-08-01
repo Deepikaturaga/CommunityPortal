@@ -1,1 +1,1 @@
-"""Package marker for tests."""
+"""Tests package."""
