@@ -1,4 +1,4 @@
-"""Alembic async env – SQLAlchemy 2.0 style."""
+"""Alembic environment configuration."""
 from __future__ import annotations
 
 import asyncio
@@ -6,14 +6,17 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# Import Base so all models are registered for autogenerate
-from app.core.database import Base  # noqa: F401
-import app.services.notifications.models  # noqa: F401  – register ORM models
+# Import Base + all models for autogenerate
+from app.core.database import Base
+import app.models  # noqa: F401 — registers all models
 
+# Alembic Config object
 config = context.config
 
+# Interpret the config file for Python logging.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -21,33 +24,33 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        render_as_batch=True,  # Required for SQLite ALTER support
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
-def do_run_migrations(connection):  # type: ignore[no-untyped-def]
+def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        compare_type=True,
+        render_as_batch=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_async_migrations() -> None:
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url")
+    """Run migrations in 'online' mode with async engine."""
     connectable = async_engine_from_config(
-        configuration,
+        config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

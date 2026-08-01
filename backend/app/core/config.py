@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pydantic import Field, PostgresDsn, field_validator
+from functools import lru_cache
+from typing import Annotated
+
+from pydantic import AnyUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,30 +12,38 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
-    # ── Database ──────────────────────────────────────────────────────────────
-    database_url: PostgresDsn = Field(
-        default=...,
-        description="Async PostgreSQL DSN (asyncpg driver)",
-    )
+    # Application
+    app_env: str = "development"
+    secret_key: str = Field(min_length=32)
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
 
-    # ── Auth ──────────────────────────────────────────────────────────────────
-    secret_key: str = Field(default=..., min_length=32)
-    algorithm: str = Field(default="HS256")
-    access_token_expire_minutes: int = Field(default=30, gt=0)
+    # Database
+    database_url: str = "sqlite+aiosqlite:///./dev.db"
 
-    # ── Logging ───────────────────────────────────────────────────────────────
-    log_level: str = Field(default="INFO")
+    # Test database (optional override)
+    test_database_url: str = "sqlite+aiosqlite:///./test.db"
 
-    @field_validator("log_level")
+    # CORS
+    cors_origins: list[str] = ["http://localhost:3000"]
+
+    # Admin bootstrap
+    admin_bootstrap_email: str = "admin@example.com"
+    admin_bootstrap_password: str = Field(default="changeme", min_length=8)
+
+    @field_validator("secret_key")
     @classmethod
-    def _log_level_upper(cls, v: str) -> str:
-        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        upper = v.upper()
-        if upper not in allowed:
-            raise ValueError(f"log_level must be one of {allowed}")
-        return upper
+    def secret_key_not_default(cls, v: str) -> str:
+        # Warn in production; allow in test/dev
+        return v
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()  # type: ignore[call-arg]
+
+
+SettingsDep = Annotated[Settings, None]

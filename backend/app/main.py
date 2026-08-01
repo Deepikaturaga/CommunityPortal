@@ -1,64 +1,65 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 
-import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core.database import engine
-from app.core.logging import configure_logging
-from app.services.notifications.router import router as notifications_router
-
-configure_logging()
-logger: structlog.BoundLogger = structlog.get_logger(__name__)
+from app.core.config import get_settings
+from app.core.database import _get_engine
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("startup", event="api_startup")
+async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+    # Startup: warm the engine pool (validates DSN early)
+    _get_engine()
     yield
-    logger.info("shutdown", event="api_shutdown")
+    # Shutdown: dispose engine
+    engine = _get_engine()
     await engine.dispose()
 
 
-app = FastAPI(
-    title="Notification Preference API",
-    version="1.0.0",
-    description="COMP-008 – notification preference and list API (IF-010)",
-    lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
-)
+def create_app() -> FastAPI:
+    settings = get_settings()
 
-# ── CORS (locked down – override via env/config for prod) ─────────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[],   # deny all cross-origin by default; override in deployment config
-    allow_credentials=False,
-    allow_methods=["GET", "PUT"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-
-
-# ── Global exception handler – no internal details leaked ─────────────────────
-@app.exception_handler(Exception)
-async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("unhandled_exception", path=request.url.path, exc=str(exc))
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An unexpected error occurred."},
+    application = FastAPI(
+        title="Content Moderation API",
+        version="1.0.0",
+        docs_url="/docs" if settings.app_env != "production" else None,
+        redoc_url="/redoc" if settings.app_env != "production" else None,
+        lifespan=lifespan,
     )
 
+    # CORS
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
-# ── Routers ────────────────────────────────────────────────────────────────────
-app.include_router(notifications_router, prefix="/api/v1")
+    # Global exception handler — never leak internals
+    @application.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An unexpected error occurred."},
+        )
+
+    # Routers
+    from app.api.admin_router import router as admin_router  # noqa: PLC0415
+
+    application.include_router(admin_router, prefix="/api/v1")
+
+    # Health check
+    @application.get("/health", tags=["ops"], include_in_schema=False)
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return application
 
 
-# ── Health / readiness ─────────────────────────────────────────────────────────
-@app.get("/health", tags=["ops"], status_code=status.HTTP_200_OK)
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app()

@@ -1,52 +1,41 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Annotated
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 
-from app.core.config import settings
+from app.core.config import get_settings
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
-
-
-class TokenPayload:
-    """Thin wrapper for JWT claims – no DB round-trip."""
-
-    def __init__(self, sub: str, exp: int) -> None:
-        self.user_id: str = sub
-        self.exp: int = exp
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def _decode_token(token: str) -> TokenPayload:
-    credentials_exc = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def hash_password(plain: str) -> str:
+    return pwd_context.hash(plain)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def create_access_token(subject: str, extra_claims: dict[str, Any] | None = None) -> str:
+    settings = get_settings()
+    now = datetime.now(tz=timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "iat": now,
+        "exp": now.replace(
+            second=now.second + settings.access_token_expire_minutes * 60
+        ),
+        **(extra_claims or {}),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    settings = get_settings()
     try:
-        payload = jwt.decode(
-            token,
-            settings.secret_key,
-            algorithms=[settings.algorithm],
-        )
-        sub: str | None = payload.get("sub")
-        exp: int | None = payload.get("exp")
-        if sub is None or exp is None:
-            raise credentials_exc
-        if datetime.fromtimestamp(exp, tz=UTC) < datetime.now(tz=UTC):
-            raise credentials_exc
-        return TokenPayload(sub=sub, exp=exp)
-    except JWTError:
-        raise credentials_exc from None
-
-
-async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
-) -> TokenPayload:
-    return _decode_token(token)
-
-
-CurrentUser = Annotated[TokenPayload, Depends(get_current_user)]
+        return jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    except JWTError as exc:
+        raise ValueError("Invalid or expired token") from exc

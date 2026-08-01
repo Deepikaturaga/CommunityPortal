@@ -1,57 +1,57 @@
 [build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.poetry]
+[project]
 name = "backend"
 version = "0.1.0"
-description = "Notification Preference API – backend service"
-authors = ["Engineering <eng@example.com>"]
-readme = "README.md"
-packages = [{ include = "app" }]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic>=2.10.3",
+    "pydantic-settings>=2.6.1",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    "asyncpg==0.30.0",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27.0",
+    "greenlet==3.1.1",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-fastapi = "^0.115.0"
-uvicorn = { version = "^0.32.0", extras = ["standard"] }
-pydantic = "^2.10.3"
-pydantic-settings = "^2.6.1"
-sqlalchemy = { version = "^2.0.30", extras = ["asyncio"] }
-alembic = "^1.13.0"
-asyncpg = "^0.29.0"
-python-jose = { version = "^3.3.0", extras = ["cryptography"] }
-passlib = { version = "^1.7.4", extras = ["bcrypt"] }
-python-multipart = "^0.0.9"
-httpx = "^0.27.0"
-structlog = "^24.2.0"
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "pytest-cov==6.0.0",
+    "aiosqlite==0.20.0",
+    "ruff==0.8.4",
+    "mypy==1.13.0",
+    "types-passlib==1.7.7.20240819",
+    "types-python-jose==3.3.4.20240106",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.2.0"
-pytest-asyncio = "^0.24.0"
-pytest-cov = "^5.0.0"
-anyio = "^4.7.0"
-ruff = "^0.4.0"
-mypy = "^1.10.0"
-types-passlib = "^1.7.7"
-types-python-jose = "^3.3.4"
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-# TCH (type-checking imports) excluded: Pydantic v2 models and FastAPI
-# dependencies need runtime imports; moving them to TYPE_CHECKING blocks
-# would break model_validate and dependency injection at runtime.
-ignore = ["B008"]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["S101", "B008"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
+plugins = ["pydantic.mypy"]

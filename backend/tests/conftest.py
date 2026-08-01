@@ -1,38 +1,148 @@
-"""Shared pytest fixtures for the notification preference API tests."""
+"""Shared test fixtures for the backend test suite."""
 from __future__ import annotations
-from collections.abc import AsyncGenerator
 
+import asyncio
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from jose import jwt
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import settings
-from app.main import app
+from app.core.database import Base, build_engine, build_session_factory, get_db
+from app.core.security import create_access_token, hash_password
+from app.main import create_app
+from app.models.content import ContentItem, ContentStatus
+from app.models.moderation import ModerationAction, ModerationVerdict
+from app.models.user import User, UserRole, UserStatus
 
-
-# ── JWT helpers ────────────────────────────────────────────────────────────────
-
-def make_token(user_id: str, secret: str | None = None) -> str:
-    import time
-
-    secret = secret or settings.secret_key
-    now = int(time.time())
-    return jwt.encode(
-        {"sub": user_id, "exp": now + 3600},
-        secret,
-        algorithm=settings.algorithm,
-    )
+TEST_DB_URL = "sqlite+aiosqlite:///./test_dashboard.db"
 
 
-def auth_headers(user_id: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {make_token(user_id)}"}
+@pytest.fixture(scope="session")
+def anyio_backend() -> str:
+    return "asyncio"
 
 
-# ── In-process async HTTP client ───────────────────────────────────────────────
+@pytest_asyncio.fixture(scope="session")
+async def engine():
+    eng = build_engine(TEST_DB_URL)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield eng
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await eng.dispose()
+
 
 @pytest_asyncio.fixture
-async def async_client() -> AsyncGenerator[AsyncClient, None]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        yield client
+async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest_asyncio.fixture
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    app = create_app()
+
+    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    transport = ASGITransport(app=app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Token helpers
+# ---------------------------------------------------------------------------
+
+
+def admin_token(user_id: str = "admin-001") -> str:
+    return create_access_token(subject=user_id, extra_claims={"role": "admin"})
+
+
+def user_token(user_id: str = "user-001") -> str:
+    return create_access_token(subject=user_id, extra_claims={"role": "user"})
+
+
+def moderator_token(user_id: str = "mod-001") -> str:
+    return create_access_token(subject=user_id, extra_claims={"role": "moderator"})
+
+
+# ---------------------------------------------------------------------------
+# Data seeding helpers
+# ---------------------------------------------------------------------------
+
+
+async def seed_user(
+    db: AsyncSession,
+    *,
+    user_id: str | None = None,
+    role: UserRole = UserRole.user,
+    status: UserStatus = UserStatus.active,
+    created_at: datetime | None = None,
+) -> User:
+    u = User(
+        id=user_id or str(uuid.uuid4()),
+        email=f"{uuid.uuid4()}@example.com",
+        hashed_password=hash_password("Password1!"),
+        display_name="Test User",
+        role=role,
+        status=status,
+    )
+    if created_at is not None:
+        u.created_at = created_at
+    db.add(u)
+    await db.flush()
+    return u
+
+
+async def seed_content(
+    db: AsyncSession,
+    *,
+    author_id: str,
+    status: ContentStatus = ContentStatus.pending,
+    created_at: datetime | None = None,
+) -> ContentItem:
+    c = ContentItem(
+        id=str(uuid.uuid4()),
+        author_id=author_id,
+        title="Test content",
+        body="Body text",
+        status=status,
+    )
+    if created_at is not None:
+        c.created_at = created_at
+    db.add(c)
+    await db.flush()
+    return c
+
+
+async def seed_moderation(
+    db: AsyncSession,
+    *,
+    content_item_id: str,
+    moderator_id: str | None,
+    verdict: ModerationVerdict,
+    created_at: datetime | None = None,
+) -> ModerationAction:
+    m = ModerationAction(
+        id=str(uuid.uuid4()),
+        content_item_id=content_item_id,
+        moderator_id=moderator_id,
+        verdict=verdict,
+    )
+    if created_at is not None:
+        m.created_at = created_at
+    db.add(m)
+    await db.flush()
+    return m
