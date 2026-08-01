@@ -1,66 +1,48 @@
-"""User ORM model."""
-from __future__ import annotations
+"""User ORM model — canonical identity entity (PHASE-011 / TASK-021)."""
 
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.core.database import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(tz=UTC)
 
 
 class User(Base):
+    """Registered member account."""
+
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-
-    # ── Account state ──────────────────────────────────────────────────────────
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    # ── MFA / TOTP ────────────────────────────────────────────────────────────
-    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    # ── Lockout ───────────────────────────────────────────────────────────────
-    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    locked_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        index=True,
     )
+    email: Mapped[str] = mapped_column(
+        String(254), unique=True, nullable=False, index=True
+    )
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
-    # ── Refresh token family (rotation / replay detection) ───────────────────
-    # Stores the JTI of the current valid refresh token.  A reuse of an
-    # invalidated JTI triggers family revocation (all tokens for this user
-    # are implicitly invalidated by rotating this value).
-    refresh_token_jti: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # --- profile fields (COMP-002 / IF-003) ---
+    display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    website_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    # ── Timestamps ────────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
+        DateTime(timezone=True), default=_utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
-
-    def is_locked(self, now: datetime | None = None) -> bool:
-        """Return True if account is currently locked out."""
-        if self.locked_until is None:
-            return False
-        _now = now or datetime.now(tz=timezone.utc)
-        # Ensure both are tz-aware for comparison
-        locked = (
-            self.locked_until.replace(tzinfo=timezone.utc)
-            if self.locked_until.tzinfo is None
-            else self.locked_until
-        )
-        return locked > _now
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r}>"

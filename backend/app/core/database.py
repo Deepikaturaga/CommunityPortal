@@ -1,65 +1,37 @@
-from __future__ import annotations
+"""Async SQLAlchemy engine and session factory."""
 
 from collections.abc import AsyncGenerator
-from typing import Any
 
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-from app.core.config import get_settings
+from app.core.config import settings
 
-_engine: AsyncEngine | None = None
-_session_factory: async_sessionmaker[AsyncSession] | None = None
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    pool_pre_ping=True,
+)
+
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+    autocommit=False,
+)
 
 
 class Base(DeclarativeBase):
-    """Canonical SQLAlchemy declarative base."""
+    """Shared declarative base for all ORM models."""
 
 
-def get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
-        settings = get_settings()
-        _engine = create_async_engine(
-            settings.database_url,
-            echo=settings.environment == "development",
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
-        )
-    return _engine
-
-
-def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    global _session_factory
-    if _session_factory is None:
-        _session_factory = async_sessionmaker(
-            get_engine(),
-            expire_on_commit=False,
-            autoflush=False,
-        )
-    return _session_factory
-
-
-async def get_db() -> AsyncGenerator[AsyncSession, Any]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency: yields a transactional async session."""
-    factory = get_session_factory()
-    async with factory() as session:
+    async with AsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
         except Exception:
             await session.rollback()
             raise
-
-
-async def close_engine() -> None:
-    global _engine
-    if _engine is not None:
-        await _engine.dispose()
-        _engine = None
