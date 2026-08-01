@@ -1,0 +1,23 @@
+[
+  "backend/.env.example",
+  "backend/alembic.ini",
+  "backend/alembic/env.py",
+  "backend/alembic/script.py.mako",
+  "backend/alembic/versions/0001_create_moderation_reports.py",
+  "backend/app/__init__.py",
+  "backend/app/core/__init__.py",
+  "backend/app/core/config.py",
+  "backend/app/core/database.py",
+  "backend/app/core/errors.py",
+  "backend/app/main.py",
+  "backend/app/services/__init__.py",
+  "backend/app/services/moderation/__init__.py",
+  "backend/app/services/moderation/models.py",
+  "backend/app/services/moderation/reports.py",
+  "backend/app/services/moderation/router.py",
+  "backend/app/services/moderation/schemas.py",
+  "backend/pyproject.toml",
+  "backend/tests/__init__.py",
+  "backend/tests/conftest.py",
+  "backend/tests/test_moderation_reports.py"
+]
