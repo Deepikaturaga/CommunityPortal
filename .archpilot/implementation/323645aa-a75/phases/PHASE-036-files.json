@@ -1,0 +1,12 @@
+[
+  "backend/tests/__init__.py",
+  "backend/tests/search/__init__.py",
+  "backend/tests/search/conftest.py",
+  "backend/tests/search/path_setup.py",
+  "backend/tests/search/test_search_injection.py",
+  "backend/tests/search/test_search_pagination.py",
+  "backend/tests/search/test_search_relevance.py",
+  "backend/tests/search/test_visibility_leakage.py",
+  "pyproject.toml",
+  "pytest.ini"
+]
