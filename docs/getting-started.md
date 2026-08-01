@@ -1,619 +1,432 @@
-# Getting Started — Developer Onboarding Guide
+# Getting Started
 
-> **Goal:** a brand-new engineer with a fresh machine can clone this repo, satisfy all
-> prerequisites, and have a fully working local environment in a single sitting using only
-> this document.
->
-> **Validation status:** this guide has been dry-run from a clean checkout against the
-> `main` branch. Every command listed here is also exercised in CI
-> (see `.github/workflows/`). If you hit a step that does not work, open an issue and
-> reference the step number.
+## Prerequisites
 
----
-
-## Table of Contents
-
-1. [Machine Prerequisites](#1-machine-prerequisites)
-2. [Clone the Repository](#2-clone-the-repository)
-3. [Install Runtime Tooling](#3-install-runtime-tooling)
-4. [Configure Environment Variables](#4-configure-environment-variables)
-   - [4a. Frontend (`frontend/.env.local`)](#4a-frontend-frontendenvlocal)
-   - [4b. Backend (`backend/.env`)](#4b-backend-backendenv)
-   - [4c. Complete variable reference](#4c-complete-variable-reference)
-5. [Install Application Dependencies](#5-install-application-dependencies)
-6. [Start the Local Services](#6-start-the-local-services)
-7. [Run Database Migrations](#7-run-database-migrations)
-8. [Verify Everything Is Working](#8-verify-everything-is-working)
-9. [Run the Test Suites](#9-run-the-test-suites)
-   - [9a. Frontend unit / component tests](#9a-frontend-unit--component-tests)
-   - [9b. Backend unit / integration tests](#9b-backend-unit--integration-tests)
-   - [9c. End-to-end tests (Playwright)](#9c-end-to-end-tests-playwright)
-10. [Code-Quality Checks (lint + type-check)](#10-code-quality-checks-lint--type-check)
-11. [Production Build Check](#11-production-build-check)
-12. [Deploy Commands](#12-deploy-commands)
-13. [Common Troubleshooting](#13-common-troubleshooting)
-14. [IDE Setup (Recommended)](#14-ide-setup-recommended)
-15. [Next Steps](#15-next-steps)
+| Tool | Minimum Version | Notes |
+|------|----------------|-------|
+| [Python](https://www.python.org/downloads/) | 3.12 | Backend runtime |
+| [Poetry](https://python-poetry.org/docs/) | 1.8+ | Python dependency management (or use pip with the setuptools build backend) |
+| [Node.js](https://nodejs.org/) | 20 LTS | Frontend toolchain |
+| [npm](https://www.npmjs.com/) | 10+ | Frontend package manager (bundled with Node 20) |
+| [Docker](https://docs.docker.com/get-docker/) | 24+ | Container builds and local compose |
+| [Docker Compose](https://docs.docker.com/compose/) | 2.x | Local multi-service orchestration |
+| [OpenTofu](https://opentofu.org/docs/intro/install/) | 1.7+ | Infrastructure as Code (Terraform-compatible) |
+| [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) | 2.x | AWS interaction and ECR login |
+| AWS account | — | With permissions for VPC, ECS, Aurora, ElastiCache, S3, OpenSearch, SES, SQS, EventBridge, Secrets Manager, ECR, CloudWatch, WAF, IAM |
 
 ---
 
-## 1. Machine Prerequisites
+## Local Development Setup
 
-Install the following tools **before** cloning the repository. Version ranges are
-minimums; newer patch releases are fine.
-
-| Tool | Minimum version | Install guide |
-|------|----------------|---------------|
-| **Git** | 2.40 | <https://git-scm.com/downloads> |
-| **Node.js** | 20 LTS | Use [nvm](https://github.com/nvm-sh/nvm) or [fnm](https://github.com/Schniz/fnm) — see §3 |
-| **npm** | 10 | Bundled with Node 20 — no separate install needed |
-| **Docker Desktop** | 24 | <https://docs.docker.com/get-docker/> |
-| **Docker Compose** | 2.20 | Bundled with Docker Desktop |
-
-**Optional** (only needed for infrastructure work):
-
-| Tool | Minimum version | Purpose |
-|------|----------------|---------|
-| AWS CLI | 2.15 | Deploy / inspect AWS resources |
-| PostgreSQL client (`psql`) | 15 | Direct database inspection |
-
-> **Windows users:** all shell commands below assume **bash** (Git Bash, WSL 2, or
-> similar). PowerShell equivalents exist but are not documented here. WSL 2 is strongly
-> recommended.
-
----
-
-## 2. Clone the Repository
+### Backend (Python / FastAPI)
 
 ```bash
-git clone git@github.com:<org>/<repo>.git   # SSH (preferred)
-# or
-git clone https://github.com/<org>/<repo>.git
+# 1. Clone the repository
+git clone <repo-url>   # replace with actual URL when available
+cd project-root
 
-cd <repo>
+# 2. Install Python dependencies
+cd backend
+pip install -e ".[dev]"
+# or, if using Poetry:
+# poetry install
+
+# 3. Configure local environment variables
+cp .env.example .env
+# Edit backend/.env — see the Environment Variables table below
+
+# 4. Start local backing services (Postgres, Redis) via Docker Compose
+# (docker-compose.yml at repository root — TBD)
+docker compose up -d postgres redis
+
+# 5. Run database migrations (Alembic)
+# Uses DATABASE_SYNC_URL from the environment
+cd backend
+alembic upgrade head
+
+# 6. Start the API in development mode
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Verify you are on the `main` branch with a clean working tree:
+The API will be available at `http://localhost:8000`. Interactive docs: `http://localhost:8000/docs`.
+
+### Frontend (React / Vite)
 
 ```bash
-git status
-# On branch main
-# nothing to commit, working tree clean
-```
-
----
-
-## 3. Install Runtime Tooling
-
-### Node.js via nvm (recommended)
-
-The repo ships an `.nvmrc` pinned to Node 20 LTS. With **nvm** installed:
-
-```bash
-nvm install    # reads .nvmrc and installs the pinned version
-nvm use        # activates it in the current shell
-node --version # should print v20.x.x
-npm --version  # should print 10.x.x
-```
-
-With **fnm**:
-
-```bash
-fnm install    # reads .nvmrc
-fnm use
-```
-
-### Docker
-
-Start Docker Desktop (or the Docker daemon on Linux) and confirm it is running:
-
-```bash
-docker info             # should print server info with no errors
-docker compose version  # should print Docker Compose version 2.20+
-```
-
----
-
-## 4. Configure Environment Variables
-
-Both applications require a local `.env` file that is **never committed** to Git (both
-paths are listed in `.gitignore`).
-
-### 4a. Frontend (`frontend/.env.local`)
-
-```bash
-cp frontend/.env.example frontend/.env.local
-```
-
-Open `frontend/.env.local` and review every value before proceeding.
-
-### 4b. Backend (`backend/.env`)
-
-```bash
-cp backend/.env.example backend/.env
-```
-
-Generate a strong `SESSION_SECRET` before editing the file:
-
-```bash
-openssl rand -hex 32
-# example output: a3f8c2e1...  (64 hex characters = 256-bit secret)
-```
-
-Paste the output as the value of `SESSION_SECRET` in `backend/.env`.
-
-### 4c. Complete variable reference
-
-The table below lists **every** environment variable consumed by either application. All
-variables marked **✅ Yes** must be set before starting the services; **⚠️ Default** means
-the application will use the shown fallback but you should confirm it matches your local
-setup.
-
-#### Frontend (`frontend/.env.local`)
-
-| Variable | Default / hint | Required? | Notes |
-|----------|---------------|-----------|-------|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:4000` | ✅ Yes | Public browser-side base URL for the API. Bundled into the client bundle — **no secrets here**. |
-| `API_INTERNAL_URL` | `http://localhost:4000` | ✅ Yes | Server-side only (RSC / route handlers / server actions). Never exposed to the browser. In production this is an internal VPC DNS name injected from AWS Secrets Manager. |
-
-> **Security rule:** `NEXT_PUBLIC_*` variables are inlined into the browser bundle at
-> build time. Never assign a secret or internal token to a `NEXT_PUBLIC_*` variable.
-
-#### Backend (`backend/.env`)
-
-| Variable | Default / hint | Required? | Notes |
-|----------|---------------|-----------|-------|
-| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/appdb` | ✅ Yes | Prisma connection string. In production, injected from AWS Secrets Manager. |
-| `SESSION_SECRET` | *(none — must generate)* | ✅ Yes | Minimum 32 characters. Generate with `openssl rand -hex 32`. Rotation procedure: update Secrets Manager → rolling ECS deploy. |
-| `COOKIE_DOMAIN` | `localhost` | ✅ Yes | Domain on which the `Set-Cookie` header is scoped. Must match the domain the browser is accessing. In production: `your-domain.com`. |
-| `PORT` | `4000` | ⚠️ Default | HTTP listen port. Change only if you have a conflict. |
-| `NODE_ENV` | `development` | ⚠️ Default | Controls logging verbosity and error detail. **Never** set to `development` in production. |
-| `LOG_LEVEL` | `debug` | ⚠️ Default | Structured log level (`debug`, `info`, `warn`, `error`). CI uses `warn`; production uses `info`. |
-| `CORS_ORIGIN` | `http://localhost:3000` | ⚠️ Default | Allowed CORS origin for browser requests. In production: the CloudFront distribution URL. |
-
-> **Security:** `.env` and `.env.local` are in `.gitignore`. **Never commit them.**
-> Production secrets live exclusively in **AWS Secrets Manager** and are injected into
-> ECS task environment variables at container start via the task-definition `secrets`
-> block. No secret ever travels through a Docker image layer or a CI log.
-
----
-
-## 5. Install Application Dependencies
-
-Each workspace manages its own `node_modules`. Install them independently using `npm ci`
-to honour the lockfile exactly — this is also what CI runs.
-
-```bash
-# Frontend
+# From the repository root
 cd frontend
-npm ci
-cd ..
 
-# Backend
-cd backend
-npm ci
-cd ..
-```
+# Install dependencies
+npm install
 
-> If `npm ci` fails with `EINTEGRITY` or peer-dependency errors, see
-> [Troubleshooting §13](#13-common-troubleshooting).
-
----
-
-## 6. Start the Local Services
-
-Choose **Option A** (recommended for active development — isolated logs per service) or
-**Option B** (single command, closer to production).
-
-### Option A — Separate terminals (recommended)
-
-Open **three** terminal tabs/windows from the repository root.
-
-**Tab 1 — PostgreSQL only:**
-
-```bash
-docker compose up postgres
-```
-
-Wait until you see:
-
-```
-postgres  | database system is ready to accept connections
-```
-
-**Tab 2 — Backend API (http://localhost:4000):**
-
-```bash
-cd backend
+# Start the development server (proxies API calls to localhost:8000)
 npm run dev
 ```
 
-Expected startup output (after running migrations in §7):
+The frontend will be available at `http://localhost:5173` (default Vite port).
 
-```
-[ts-node-dev] Restarting: /backend/src/index.ts
-Server listening on http://localhost:4000
+---
+
+## Environment Variables
+
+The following variables are the **only** ones actually referenced in the generated code.
+Copy the template for your target environment and fill in values:
+
+```bash
+cp .env.example .env            # local development
+cp .env.beta.example .env       # beta (pre-production)
+cp .env.prod.example .env       # prod (production)
 ```
 
-**Tab 3 — Frontend (http://localhost:3000):**
+In deployed environments (beta / prod), **secret values are injected by AWS ECS from Secrets Manager** — do not commit real values to any file.
+
+### Backend variables (`backend/.env`)
+
+| Variable | Description | Example (local) | Required |
+|----------|-------------|-----------------|----------|
+| `DATABASE_URL` | Async SQLAlchemy DSN (asyncpg driver) used by the application | `postgresql+asyncpg://user:CHANGE_ME@localhost:5432/appdb` | Yes |
+| `DATABASE_SYNC_URL` | Synchronous DSN used by Alembic migrations | `postgresql+psycopg2://user:CHANGE_ME@localhost:5432/appdb` | Yes (migrations) |
+| `SECRET_KEY` | HMAC key for token signing — ≥32 bytes high-entropy random string | `CHANGE_ME_generate_a_real_random_secret_key` | Yes |
+| `ENVIRONMENT` | Runtime environment tag (`development` / `beta` / `production`) | `development` | Yes |
+| `COOKIE_SECURE` | Set `true` when behind HTTPS proxy (ALB in deployed envs) | `false` | No |
+| `AWS_REGION` | AWS region for SDK calls (SES, SQS, EventBridge, S3) | `us-east-1` | Yes (AWS features) |
+| `AWS_DEFAULT_REGION` | Fallback AWS region used by some SDK paths | `us-east-1` | No |
+| `EVENT_BUS_NAME` | EventBridge custom bus name for content-lifecycle events | `app-events-local` | Yes (events) |
+| `EVENTS_ENABLED` | Feature flag — set `false` to disable EventBridge locally | `false` | No |
+
+### Session store / identity variables (`backend/.env`)
+
+| Variable | Description | Example (local) | Required |
+|----------|-------------|-----------------|----------|
+| `REDIS_URL` | Redis DSN for session store and rate-limit counters | `redis://localhost:6379/0` | Yes |
+| `REDIS_MAX_CONNECTIONS` | Redis connection pool size | `20` | No |
+| `REDIS_SOCKET_TIMEOUT` | Redis socket timeout (seconds) | `2.0` | No |
+| `REDIS_SOCKET_CONNECT_TIMEOUT` | Redis connect timeout (seconds) | `2.0` | No |
+| `REDIS_SESSION_PREFIX` | Key prefix for session entries | `session:` | No |
+| `SESSION_COOKIE_NAME` | Name of the session cookie issued to clients | `sid` | No |
+| `SESSION_COOKIE_MAX_AGE` | Session cookie TTL in seconds | `3600` | No |
+| `SESSION_COOKIE_SECURE` | Sets the `Secure` attribute (`true` in deployed envs) | `true` | No |
+| `SESSION_COOKIE_HTTPONLY` | Sets `HttpOnly` attribute | `true` | No |
+| `SESSION_COOKIE_SAMESITE` | SameSite policy (`lax` or `strict`) | `lax` | No |
+| `SESSION_COOKIE_PATH` | Cookie path | `/` | No |
+| `SESSION_SIGNING_SECRET` | Shared secret for signing session cookies — ≥32 bytes | `change-me-before-production-32b!` | Yes |
+
+### Security header variables (`backend/.env`)
+
+| Variable | Description | Example (local) | Required |
+|----------|-------------|-----------------|----------|
+| `HTTPS_BEHIND_PROXY` | Trust `X-Forwarded-Proto` from ALB; emit HSTS | `true` | No |
+| `HSTS_MAX_AGE` | HSTS `max-age` in seconds | `31536000` | No |
+| `HSTS_INCLUDE_SUBDOMAINS` | Include subdomains in HSTS | `true` | No |
+| `HSTS_PRELOAD` | HSTS preload directive | `false` | No |
+| `CORS_ALLOW_ORIGINS` | Comma-separated allowed CORS origins | `https://app.example.com` | Yes |
+| `CORS_ALLOW_CREDENTIALS` | Allow cookies in cross-origin requests | `true` | No |
+| `CORS_ALLOW_METHODS` | Allowed HTTP methods | `GET,POST,PUT,PATCH,DELETE,OPTIONS` | No |
+| `CORS_ALLOW_HEADERS` | Allowed request headers | `Authorization,Content-Type,X-Request-ID` | No |
+| `CSP_POLICY` | Full Content-Security-Policy header value | `default-src 'none'; frame-ancestors 'none'` | No |
+
+### Test-only variables
+
+| Variable | Description | Example | Required |
+|----------|-------------|---------|----------|
+| `TEST_DATABASE_URL` | DSN for the isolated test database | `postgresql+asyncpg://user:pw@localhost:5432/testdb` | Tests only |
+| `AUTH_STUB_ENABLED` | Bypass real auth in integration tests | `true` | Tests only |
+| `DYNAMODB_ENDPOINT_URL` | LocalStack/DynamoDB local endpoint for tests | `http://localhost:8000` | Tests only |
+| `DYNAMODB_TABLE_NAME` | DynamoDB table name used in tests | `discussion-local` | Tests only |
+| `DISCUSSION_TABLE_NAME` | Discussion service DynamoDB table | `discussion-local` | Tests only |
+| `DISCUSSION_TTL_SECONDS` | TTL for discussion entries | `86400` | Tests only |
+
+### Frontend variables (`frontend/.env`)
+
+| Variable | Description | Example (local) | Required |
+|----------|-------------|-----------------|----------|
+| `NEXT_PUBLIC_API_BASE_URL` | Base URL for the discussion API client | `http://localhost:8000` | Yes |
+| `NEXT_PUBLIC_API_URL` | Base URL for the KB / general API client | `http://localhost:8000` | Yes |
+| `BASE_URL` | Base URL used by Playwright E2E tests | `http://localhost:5173` | Tests only |
+| `CI` | Set automatically by GitHub Actions; affects Playwright config | _(auto-set in CI)_ | CI only |
+| `TEST_USER_EMAIL` | Email of the test account used in a11y/auth setup | `testuser@example.com` | a11y tests |
+| `TEST_USER_PASSWORD` | Password of the test account | `CHANGE_ME_test_password` | a11y tests |
+
+> **Security note:** `SECRET_KEY` and `SESSION_SIGNING_SECRET` must be high-entropy random strings (≥ 32 bytes) in all deployed environments. They are injected by AWS ECS from Secrets Manager at task launch time — never from committed files. The session cookie is issued with `HttpOnly`, `Secure`, and `SameSite=Lax/Strict` attributes (TASK-014).
+
+---
+
+## Environment Configuration Matrix (beta vs prod)
+
+Environment-specific values differ primarily in AWS resource identifiers and feature flags. Secrets are always from AWS Secrets Manager in deployed environments.
+
+| Variable | local | beta | prod |
+|----------|-------|------|------|
+| `ENVIRONMENT` | `development` | `beta` | `production` |
+| `DATABASE_URL` | `postgresql+asyncpg://…@localhost/appdb` | _(Secrets Manager — Aurora beta)_ | _(Secrets Manager — Aurora prod)_ |
+| `DATABASE_SYNC_URL` | `postgresql+psycopg2://…@localhost/appdb` | _(Secrets Manager — Aurora beta sync)_ | _(Secrets Manager — Aurora prod sync)_ |
+| `SECRET_KEY` | `change-me-local…` | _(Secrets Manager)_ | _(Secrets Manager)_ |
+| `SESSION_SIGNING_SECRET` | `change-me-before-production-32b!` | _(Secrets Manager)_ | _(Secrets Manager)_ |
+| `REDIS_URL` | `redis://localhost:6379/0` | `rediss://beta-redis.…:6379` | `rediss://prod-redis.…:6379` |
+| `SESSION_COOKIE_SECURE` | `false` | `true` | `true` |
+| `COOKIE_SECURE` | `false` | `true` | `true` |
+| `HTTPS_BEHIND_PROXY` | `false` | `true` | `true` |
+| `AWS_REGION` | `us-east-1` | `us-east-1` | `us-east-1` |
+| `EVENT_BUS_NAME` | `app-events-local` | `app-events-beta` | `app-events-prod` |
+| `EVENTS_ENABLED` | `false` | `true` | `true` |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:5173` | `https://beta.app.example.com` | `https://app.example.com` |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | `https://api.beta.example.com` | `https://api.example.com` |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | `https://api.beta.example.com` | `https://api.example.com` |
+
+---
+
+## Running Tests
+
+### Backend tests (pytest)
+
+```bash
+cd backend
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=app --cov-report=term-missing
+
+# Run a specific test module
+pytest tests/test_login_service.py -v
+
+# Run the full identity suite (VER-001, VER-005–008)
+pytest tests/identity/ tests/test_register.py tests/test_login_service.py -v
+
+# Run authorization matrix (VER-004)
+pytest tests/profile_admin/ -v
+
+# Run discussion/moderation suite (VER-002)
+pytest tests/test_moderation.py tests/routers/ -v
+
+# Run post-service suite (VER-002, VER-010)
+pytest tests/posts/ -v
+
+# Run KB suite (VER-002, VER-004)
+pytest tests/test_kb_articles.py tests/services/kb/ -v
+
+# Run search suite including injection and visibility-leakage tests (VER-003)
+pytest tests/search/ -v
+
+# Run security tests — IaC scanner, log audit, pipeline gates (VER-018, VER-019)
+pytest tests/security/ -v
+
+# Run E2E journey tests (JRN-001–003 — requires running API)
+pytest tests/e2e/ -v
+
+# Run CSRF and security header tests (VER-013, VER-014)
+pytest tests/test_csrf_middleware.py tests/test_http_headers.py tests/test_security_headers.py -v
+```
+
+### Frontend tests (Vitest + Playwright)
 
 ```bash
 cd frontend
+
+# Run unit/component tests with Vitest
+npm test
+
+# Watch mode
+npm run test:watch
+
+# Run Storybook accessibility scan
+npm run test:a11y
+
+# Run Playwright accessibility tests (requires running frontend + API)
+npx playwright test tests/a11y/
+
+# Type-check
+npm run typecheck
+
+# Lint
+npm run lint
+```
+
+---
+
+## Deployment
+
+### Run Locally
+
+```bash
+# Start local Postgres and Redis via Docker Compose
+docker compose up -d
+
+# Run Alembic migrations
+cd backend && alembic upgrade head
+
+# Start API (from backend/)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Start frontend (from frontend/)
 npm run dev
 ```
 
-Expected output:
+### Deploy to AWS
 
-```
-▲ Next.js 14.x.x
-- Local:        http://localhost:3000
-- Environments: .env.local
-✓ Ready in Xs
-```
+#### Prerequisites
 
-### Option B — Docker Compose (all services)
-
-```bash
-docker compose up --build
-```
-
-All three services start in a single terminal. Hot-reload works for the backend
-(`ts-node-dev`) and the frontend (Next.js HMR).
+1. AWS CLI configured with credentials for the target account:
+   ```bash
+   aws configure          # or: aws sso login
+   ```
+2. OpenTofu installed (`tofu --version`).
+3. Docker daemon running (for image builds and pushes).
+4. ECR repositories created (provisioned by the first IaC apply).
 
 ---
 
-## 7. Run Database Migrations
-
-Apply pending migrations on first checkout — and whenever you pull commits that add new
-migration files.
+#### Beta Environment
 
 ```bash
-cd backend
-npx prisma migrate dev
-```
+# 1. Configure AWS credentials for the beta account
+aws sso login    # or: aws configure --profile beta
 
-Expected output:
+# 2. Navigate to the beta IaC environment
+cd infra/envs/beta
 
-```
-✔  Database is now in sync with your schema.
-```
+# 3. Initialise OpenTofu (first time or after provider upgrades)
+tofu init
 
-Inspect the live schema visually (optional):
+# 4. Review the plan
+# Provisions:
+#   infra/network/       → VPC, subnets, route tables (TASK-001)
+#   infra/iam/           → ECS task roles, execution roles (TASK-002)
+#   infra/data/aurora    → Aurora cluster, KMS encryption (TASK-010)
+#   infra/data/elasticache → Redis replication group (TASK-011)
+#   infra/observability/ → CloudWatch log groups + X-Ray (TASK-005)
+#   infra/waf/           → WAF with OWASP managed rules (TASK-006)
+#   infra/edge/          → ALB, TLS termination (TASK-007)
+tofu plan -var-file="beta.tfvars"
 
-```bash
-npx prisma studio   # opens http://localhost:5555
-```
+# 5. Apply infrastructure
+tofu apply -var-file="beta.tfvars"
 
-Seed the database with development fixtures (if a seed script exists):
+# 6. Build and push the backend image to ECR (beta)
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS \
+    --password-stdin <beta-account-id>.dkr.ecr.us-east-1.amazonaws.com
 
-```bash
-npx prisma db seed
-```
+docker build -t app-api backend/
+docker tag app-api:latest \
+  <beta-account-id>.dkr.ecr.us-east-1.amazonaws.com/app-api:latest
+docker push \
+  <beta-account-id>.dkr.ecr.us-east-1.amazonaws.com/app-api:latest
 
----
+# 7. Run Alembic migrations against the beta Aurora cluster
+# (typically run as an ECS one-off task or via the CI pipeline)
+# DATABASE_SYNC_URL is injected from Secrets Manager in the task definition
 
-## 8. Verify Everything Is Working
-
-With all services running, run these quick smoke checks.
-
-### 8a. Backend health endpoint
-
-```bash
-curl -s http://localhost:4000/health | jq .
-# Expected: {"status":"ok","uptime":<seconds>}
-```
-
-### 8b. Frontend home page
-
-Open <http://localhost:3000> in your browser. The application home page should render
-without any console errors.
-
-### 8c. API connectivity from the frontend
-
-Open browser DevTools → **Network** tab, navigate to a page that fetches data, and
-confirm requests to `localhost:4000` return `200 OK`. A `401 Unauthorized` on protected
-routes when you are not yet logged in is expected and correct.
-
-### 8d. Authentication round-trip (manual)
-
-1. Navigate to `/login` and sign in with development credentials.
-2. Confirm the backend issues an `HttpOnly; Secure; SameSite=Lax` cookie (visible in
-   DevTools → Application → Cookies — the value is **not** readable by JavaScript).
-3. Navigate to a protected route and confirm you are not redirected to `/login`.
-4. Sign out; confirm you are redirected to `/login` and the cookie is cleared.
-
----
-
-## 9. Run the Test Suites
-
-### 9a. Frontend unit / component tests
-
-```bash
-cd frontend
-
-npm test                          # Jest — watch mode (interactive)
-npm test -- --watchAll=false      # Jest — single run (used in CI)
-npm test -- --coverage            # generate coverage report
-```
-
-Test files live alongside source files as `*.test.tsx` / `*.test.ts` and in
-`src/__tests__/`.
-
-### 9b. Backend unit / integration tests
-
-```bash
-cd backend
-
-npm test           # Vitest — watch mode
-npm test -- --run  # Vitest — single run (used in CI)
-```
-
-Integration tests require the PostgreSQL container to be running
-(`docker compose up postgres`).
-
-### 9c. End-to-end tests (Playwright)
-
-Both the frontend (port 3000) and the backend (port 4000) must be running before starting
-E2E tests.
-
-```bash
-# Install Playwright browsers on first run:
-cd frontend
-npx playwright install --with-deps
-
-# Run the full E2E suite:
-npm run test:e2e
-
-# Run in headed mode for debugging:
-npm run test:e2e -- --headed
-
-# Run a single spec file:
-npm run test:e2e -- e2e/auth.spec.ts
-```
-
-Playwright produces an HTML report at `frontend/playwright-report/index.html`.
-
----
-
-## 10. Code-Quality Checks (lint + type-check)
-
-These are the exact commands run by the CI pipeline on every pull request.
-
-```bash
-# Frontend
-cd frontend
-npm run lint         # ESLint (Next.js config + jsx-a11y + import order)
-npm run type-check   # tsc --noEmit
-
-# Backend
-cd backend
-npm run lint         # ESLint
-npm run type-check   # tsc --noEmit
-```
-
-Run both in one shot from the repo root (requires bash):
-
-```bash
-(cd frontend && npm run lint && npm run type-check) && \
-(cd backend  && npm run lint && npm run type-check)
-```
-
-Pre-commit hooks (Husky + lint-staged) run lint and type-check automatically on staged
-files when you `git commit`. To bypass in an emergency (not recommended):
-
-```bash
-git commit --no-verify -m "..."
-```
-
----
-
-## 11. Production Build Check
-
-Verify both apps compile cleanly before opening a pull request:
-
-```bash
-# Frontend — Next.js production build
-cd frontend
-npm run build        # next build — must exit 0
-npm run start        # optionally smoke-test the production server
-
-# Backend — TypeScript compilation
-cd backend
-npm run build        # tsc → dist/
-npm run start        # optionally smoke-test the compiled server
-```
-
-The CI `build-check` job runs these commands on every PR and blocks merge on failure.
-
----
-
-## 12. Deploy Commands
-
-> ⚠️ **Production deploys are fully automated via GitHub Actions.** Do not run these
-> manually against the production environment unless you are following the emergency
-> runbook.
-
-### Staging
-
-Staging is deployed automatically on every merge to `main`:
-
-```
-git push origin main   # triggers CI → build → push ECR → ECS rolling deploy (staging)
-```
-
-### Production
-
-Production is deployed automatically when a release tag is pushed:
-
-```bash
-git tag v1.2.3
-git push origin v1.2.3   # triggers CI → promote staging image → ECS rolling deploy (prod)
-```
-
-### Manual ECS deploy (emergency only)
-
-```bash
-# Authenticate CLI with OIDC-assumed role (replace placeholders)
-aws sts assume-role \
-  --role-arn arn:aws:iam::<account-id>:role/<deploy-role> \
-  --role-session-name manual-deploy \
-  --output json
-
-# Force new ECS task deployment
+# 8. Force a new ECS deployment to pick up the latest image
 aws ecs update-service \
-  --cluster <cluster-name> \
-  --service <frontend|backend>-service \
+  --cluster app-beta \
+  --service api-service \
   --force-new-deployment \
-  --region <aws-region>
-```
+  --region us-east-1
 
-### Infrastructure changes (AWS CDK)
-
-```bash
-cd infra
-npm ci
-npx cdk diff      # preview changes
-npx cdk deploy    # apply — requires AWS credentials with CDK bootstrap permissions
-```
-
-CDK deployments must go through a peer-reviewed PR with the `infra-change` label. The
-CDK pipeline has its own GitHub Actions workflow with a manual approval gate.
-
----
-
-## 13. Common Troubleshooting
-
-### `npm ci` fails with `EINTEGRITY` or peer-dependency errors
-
-```bash
-rm -rf frontend/node_modules frontend/package-lock.json
-cd frontend && npm install    # regenerates lockfile
-```
-
-Repeat for `backend/`. Commit any updated lockfile.
-
-### Port already in use (`EADDRINUSE`)
-
-```bash
-# macOS / Linux
-lsof -ti :3000 | xargs kill -9   # frontend
-lsof -ti :4000 | xargs kill -9   # backend
-lsof -ti :5432 | xargs kill -9   # postgres
-```
-
-### Docker Compose: `bind: address already in use` on port 5432
-
-A native PostgreSQL instance may already occupy port 5432:
-
-```bash
-# macOS
-brew services stop postgresql@15
-
-# Ubuntu
-sudo systemctl stop postgresql
-```
-
-Then re-run `docker compose up postgres`.
-
-### `prisma migrate dev` fails: `P1001 Can't reach database server`
-
-```bash
-# Confirm the container is running and healthy
-docker compose ps
-docker compose logs postgres
-
-# Confirm DATABASE_URL in backend/.env matches the Compose service credentials
-# Default: postgresql://postgres:postgres@localhost:5432/appdb
-```
-
-### Backend refuses to start — `SESSION_SECRET` missing or too short
-
-The backend validates `SESSION_SECRET` at startup and exits if it is absent or shorter
-than 32 characters. Generate a valid value:
-
-```bash
-openssl rand -hex 32
-```
-
-Paste the output into `backend/.env`.
-
-### Next.js: `Module not found: Can't resolve '...'`
-
-Usually a stale build cache or missing install:
-
-```bash
-cd frontend
-rm -rf .next
-npm ci
-npm run dev
-```
-
-### Playwright tests fail with `browser not found`
-
-```bash
-cd frontend
-npx playwright install --with-deps
-```
-
-### Type errors after pulling new code
-
-A teammate may have added new types or changed existing ones:
-
-```bash
-cd frontend && npm ci && npm run type-check
-cd backend  && npm ci && npm run type-check
+# 9. Wait for tasks to stabilise
+aws ecs wait services-stable \
+  --cluster app-beta \
+  --services api-service \
+  --region us-east-1
 ```
 
 ---
 
-## 14. IDE Setup (Recommended)
+#### Prod Environment
 
-### VS Code
+```bash
+# 1. Configure AWS credentials for the prod account (elevated / break-glass role)
+aws sso login --profile prod
 
-Install the recommended extensions (VS Code will prompt on first open if workspace
-recommendations are enabled):
+# 2. Navigate to the prod IaC environment
+cd infra/envs/prod
 
-| Extension | ID | Purpose |
-|-----------|-----|---------|
-| ESLint | `dbaeumer.vscode-eslint` | Inline lint errors |
-| Prettier | `esbenp.prettier-vscode` | Auto-format on save |
-| Prisma | `prisma.prisma` | Schema syntax + formatting |
-| Tailwind CSS IntelliSense | `bradlc.vscode-tailwindcss` | Class autocomplete |
-| GitLens | `eamodio.gitlens` | Blame, history, PR integration |
+# 3. Initialise
+tofu init
 
-Add the following to `.vscode/settings.json` for format-on-save:
+# 4. Review the plan — mandatory before apply in prod (TASK-004 gate)
+tofu plan -var-file="prod.tfvars"
 
-```json
-{
-  "editor.formatOnSave": true,
-  "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "editor.codeActionsOnSave": {
-    "source.fixAll.eslint": "explicit"
-  }
-}
+# 5. Apply — requires reviewed plan and elevated-role approval
+tofu apply -var-file="prod.tfvars"
+
+# 6. Build and push the backend image to ECR (prod)
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS \
+    --password-stdin <prod-account-id>.dkr.ecr.us-east-1.amazonaws.com
+
+docker build -t app-api backend/
+docker tag app-api:latest \
+  <prod-account-id>.dkr.ecr.us-east-1.amazonaws.com/app-api:latest
+docker push \
+  <prod-account-id>.dkr.ecr.us-east-1.amazonaws.com/app-api:latest
+
+# 7. Run migrations against Aurora prod (ECS one-off task)
+
+# 8. Force ECS deployment
+aws ecs update-service \
+  --cluster app-prod \
+  --service api-service \
+  --force-new-deployment \
+  --region us-east-1
+
+aws ecs wait services-stable \
+  --cluster app-prod \
+  --services api-service \
+  --region us-east-1
 ```
 
-### JetBrains (WebStorm / IDEA)
-
-- Enable **ESLint** automatic configuration (**Settings → Languages → JavaScript →
-  ESLint → Automatic**).
-- Enable **Prettier** on save (**Settings → Languages → JavaScript → Prettier →
-  On save**).
-- TypeScript service is auto-detected from each workspace's `tsconfig.json`.
+> **Security reminder:** Prod deployments must go through the CI/CD pipeline (TASK-003) with gated approvals and a reviewed IaC plan (TASK-004). Direct `tofu apply` from a developer workstation to prod is discouraged and requires break-glass access.
 
 ---
 
-## 15. Next Steps
+### CI/CD Pipeline Gates (TASK-003)
 
-| Document | Purpose |
-|----------|---------|
-| [`docs/architecture.md`](./architecture.md) | System components, data flow, and AWS deployment topology |
-| [`docs/decision-log.md`](./decision-log.md) | Architecture Decision Records — why we chose each technology |
-| [`docs/contributing.md`](./contributing.md) | Branch strategy, commit conventions, PR checklist |
-| [`README.md`](../README.md) | Quick-start reference and scripts cheatsheet |
+The GitHub Actions workflows in `.github/workflows/` enforce the following before any merge:
 
-Once your environment is running, pick up a ticket from the backlog, create a feature
-branch (`git checkout -b feat/<short-description>`), and open a draft PR early so
-teammates can give feedback before the implementation is complete.
+| Workflow | Gate | Blocks On |
+|----------|------|-----------|
+| `ci.yml` | Unit + integration tests | Any failure |
+| `ci.yml` | Ruff lint + mypy type-check (backend) | Any error |
+| `ci.yml` | ESLint + tsc (frontend) | Any error |
+| `security-gates.yml` | SCA (`pip-audit`) | Critical/High CVE (VER-015) |
+| `security-gates.yml` | Secret scanning (`.secrets.baseline`) | Any detected secret |
+| `identity-tests.yml` | Full identity/session test suite | VER-001, VER-005–008 failures |
+| `phase-024-discussion-tests.yml` | Discussion/moderation test suite | VER-002 failures |
+| `frontend-tests.yml` | Frontend Vitest + a11y scan | Test/lint failures |
 
-Welcome to the team! 🎉
+### Post-Deployment Verification Checklist
+
+After each environment deploy, confirm the following before marking it complete:
+
+- [ ] ECS services stable: `aws ecs wait services-stable …`
+- [ ] API health check: `curl -sI https://<alb-endpoint>/health` returns 200
+- [ ] Security headers present: `curl -sI … | grep -E "Strict-Transport-Security|Content-Security-Policy|X-Frame-Options"`
+- [ ] CloudWatch log groups `/app/api` receiving structured JSON logs with `correlationId` (VER-019)
+- [ ] Session cookie attributes: `HttpOnly; Secure; SameSite` (VER-007)
+- [ ] CSRF token rejected on a state-changing request without token (VER-014)
+- [ ] No hardcoded secrets in IaC scan (`backend/tests/security/test_iac_scanner.py` passes)
+
+### Smoke Tests After First Deploy
+
+```bash
+# 1. API reachable through WAF/ALB
+curl -sI https://<alb-endpoint>/health | grep "200"
+
+# 2. Security headers
+curl -sI https://<alb-endpoint>/health \
+  | grep -E "Strict-Transport-Security|Content-Security-Policy|X-Frame-Options"
+
+# 3. Structured logs flowing in CloudWatch
+aws logs filter-log-events \
+  --log-group-name /app/api \
+  --filter-pattern "{ $.correlationId = \"*\" }" \
+  --max-items 1 \
+  --region us-east-1
+```
+
+---
+
+> See [Architecture](./architecture.md) for service topology. See [Decision Log](./decision-log.md) for open decisions (DEC-001–DEC-006) that affect production provisioning.

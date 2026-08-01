@@ -1,1067 +1,276 @@
-# Decision Log — Architecture Decision Records (ADRs)
-
-> This document records every significant architectural, technology, and design decision
-> made during the build of this project. Each entry captures **intent** (what problem we
-> were solving), **requirements context** (the forces acting on the decision), **the
-> decision itself**, **considered alternatives**, and **trade-offs / consequences**.
 >
-> Add a new ADR entry whenever a decision with lasting architectural impact is made.
-> Decisions are immutable once they reach status **Accepted**; superseded decisions are
-> marked **Superseded by ADR-XXX** rather than deleted.
->
-> **Design Notes (DSN)** capture lower-level design choices and implementation details
-> that do not rise to the level of a full ADR. They are cross-referenced by the ADR that
-> owns their subject area and by architecture Section 2 (component model) and Section 16
-> (security boundaries).
->
-> **Decision Status Records (DEC)** provide a concise status snapshot for all in-flight
-> and resolved decisions. Auditors and new team members should read this table first.
+> **Implementation note:** The delivery was implemented in **Python 3.12 / FastAPI** (backend) and **React 18 / Vite** (frontend), superseding the earlier plan references to "Node.js services (framework pending DEC-005)". DEC-005 is resolved: compute is ECS/Fargate running Python FastAPI containers managed via Poetry/setuptools.
+| **Search** | AWS OpenSearch Service — `STORE-007`; client in `backend/app/services/search/opensearch_client.py` | Fully managed; no self-hosted Elasticsearch infra; native IAM auth; rich aggregation/DSL |
+| **Auth model** | JWT (signed with `SECRET_KEY`) + Redis-backed session via `SESSION_SIGNING_SECRET`; session store at `backend/services/identity/session_store.py` | Short-lived token limits blast radius; Redis-backed revocation enables immediate invalidation; satisfies EPIC-002 session-invalidation requirements |
+| **Content sanitisation** | Server-side sanitiser — `backend/app/kb/sanitizer.py` (KB); applied at API boundary before Aurora write | Client-side sanitisation alone is insufficient; input must be sanitised at the API boundary before persistence (DEC-001/DEC-003) |
+| **Backend language / framework** | Python 3.12, FastAPI, Uvicorn — **DEC-005 resolved** | Replaces earlier "Node.js TBD" placeholder. FastAPI provides async-first request handling, Pydantic validation, and auto-generated OpenAPI docs. Managed via Poetry/setuptools (`backend/pyproject.toml`) |
+| **Migration toolchain** | Alembic (`backend/alembic/`) | Standard SQLAlchemy migration tool; version scripts in `backend/alembic/versions/`; sync DSN configured via `DATABASE_SYNC_URL` |
+# Decision Log
+
+This file records the original intent, requirements summary, key design decisions, open decisions, and the commit-slice delivery model so that future contributors understand why the system was built this way. Full records are preserved in [Requirements](./requirements.md), [Plan](./plan.md), and [Design](./design.md). Epic/phase/task structure is described in the plan. Component IDs (COMP-xxx), store IDs (STORE-xxx), interface IDs (IF-xxx), and verification IDs (VER-xxx) are defined in the design.
 
 ---
 
-## Table of Contents
-
-| ID | Title | Status |
-|----|-------|--------|
-| [ADR-001](#adr-001) | Frontend framework — Next.js 14 App Router with React Server Components | Accepted |
-| [ADR-002](#adr-002) | Authentication transport — HTTP-only secure cookies (not bearer tokens) | Accepted |
-| [ADR-003](#adr-003) | Backend framework — dedicated Express API service (not Next.js Route Handlers only) | Accepted |
-| [ADR-004](#adr-004) | Database — Aurora PostgreSQL Serverless v2 | Accepted |
-| [ADR-005](#adr-005) | Infrastructure-as-Code — AWS CDK (TypeScript) | Accepted |
-| [ADR-006](#adr-006) | ORM and data access layer — Prisma | Accepted |
-| [ADR-007](#adr-007) | Monorepo structure — single Git repo, independent workspaces | Accepted |
-| [ADR-008](#adr-008) | Container platform — ECS Fargate (not EKS or EC2) | Accepted |
-| [ADR-009](#adr-009) | Secret management — AWS Secrets Manager (not Parameter Store or env bake) | Accepted |
-| [ADR-010](#adr-010) | CI/CD — GitHub Actions with OIDC federation (no long-lived AWS keys) | Accepted |
 
 ---
 
-## ADR-001
+## Sprint Sequence
 
-### Title: Frontend framework — Next.js 14 App Router with React Server Components
+The project is delivered across nine sprints. Each sprint has a primary goal and a set of merge-ready commit slices.
 
-**Status:** Accepted
-**Date:** 2024-01-15
-**Deciders:** Engineering lead, frontend team
-
----
-
-### Intent
-
-Choose a React rendering framework that meets the product's SEO, initial-load performance,
-and authenticated-SSR requirements while remaining maintainable by a team with existing
-React expertise.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-FE-001 | Authenticated pages must be server-rendered (SSR) — content cannot flash unauthenticated state |
-| REQ-FE-002 | Public marketing / landing pages must be indexable by search engines |
-| REQ-FE-003 | Core Web Vitals (LCP < 2.5 s, CLS < 0.1) must pass in production |
-| REQ-FE-004 | Auth session must never be readable by browser JavaScript (XSS protection) |
-| REQ-SEC-001 | Session cookie must be read server-side; tokens must not live in `localStorage` |
-
-### Decision
-
-Use **Next.js 14 with the App Router** and React Server Components (RSC) as the primary
-rendering model. Server components fetch data and render HTML on the server; client
-components are used only where browser APIs, interactivity, or client-side state are
-required. Auth is gated in `middleware.ts` by reading the HTTP-only session cookie via the
-Next.js `cookies()` helper.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| Vite SPA (React + React Router) | No SSR — fails REQ-FE-001, REQ-FE-002, REQ-SEC-001 without significant additional complexity (SSR adapters, etc.) |
-| Next.js Pages Router | Superseded by App Router; no RSC support; larger client bundle; `getServerSideProps` boilerplate |
-| Remix | Strong SSR story but smaller ecosystem; less team familiarity; form/mutation model differs; evaluated but not preferred |
-| Astro | Excellent static story but thin React component support; not a good fit for a data-heavy authenticated app |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ RSC reduces client bundle | Data-fetching components never ship their dependencies to the browser |
-| ✅ `cookies()` enables server-side auth | Session cookie is read before any client JS runs — no auth flash |
-| ✅ Streaming and Suspense | Incremental HTML delivery improves perceived performance |
-| ⚠️ RSC mental model is new | Team needs time to internalise server/client component boundary rules |
-| ⚠️ `"use client"` boundary errors are subtle | Serialisation constraints on props crossing the server/client boundary need vigilance |
-| ⚠️ Deployment requires a Node.js server | Static export is not possible for authenticated routes; ECS Fargate is required |
+| Sprint | Phases | Primary Goal | Outcome |
+|--------|--------|-------------|---------|
+| Sprint 1 | PHASE-001–007 | AWS foundation, CI/CD security gates, edge/WAF, design system, data stores | Verified infra baseline (SLICE-001–004) |
+| Sprint 2 | PHASE-008–013 | Identity & session fully implemented and verified | Auth sign-off before any content exposure (SLICE-005–007) |
+| Sprint 3 | PHASE-014–019 | Profile, media adapter, admin account/role, taxonomy | Authorization matrix verified (SLICE-008–009) |
+| Sprint 4 | PHASE-020, PHASE-025, PHASE-029 | Discussion, post, and KB core CRUD built in parallel | Three content lanes merge independently (SLICE-010, 012, 014) |
+| Sprint 5 | PHASE-021–024, PHASE-026–028, PHASE-030–032 | Moderation, drafts/comments, KB approval/revision | Content epics complete and verified (SLICE-011, 013, 015) |
+| Sprint 6 | PHASE-033–036 | Search indexing, query API, reconciliation | Full-text search epic verified (SLICE-016–017) |
+| Sprint 7 | PHASE-037–043 | Notifications, admin dashboard, rate limiting, CSRF hardening | Cross-cutting features complete (SLICE-018–020) |
+| Sprint 8 | PHASE-044–046 | Accessibility, E2E, security/log/secrets audit | Ship gate passed (SLICE-021–022) |
+| Sprint 9 | PHASE-047 | Documentation suite | Final documentation slice (SLICE-023) |
 
 ---
 
-## ADR-002
+## Commit-Slice to Story Map
 
-### Title: Authentication transport — HTTP-only secure cookies (not bearer tokens)
+This table maps each commit slice to the stories it delivers and its merge boundary. It is the canonical traceability record linking stories → phases → slices → merge gates.
 
-**Status:** Accepted
-**Date:** 2024-01-15
-**Deciders:** Engineering lead, security review
+| Slice | Phase(s) | Story/Stories | Depends On | Merge Boundary |
+|-------|----------|--------------|------------|----------------|
+| SLICE-001 | PHASE-001, PHASE-002 | STORY-001, STORY-002 | None | Network + CI/CD gates verified in dev |
+| SLICE-002 | PHASE-003, PHASE-004 | STORY-003, STORY-004 | SLICE-001 | WAF/edge headers pass VER-006/013 |
+| SLICE-003 | PHASE-005 | STORY-005 | None (parallel) | Component library Storybook builds cleanly |
+| SLICE-004 | PHASE-006, PHASE-007 | STORY-006, STORY-007 | SLICE-001 | Data-store connectivity + pipeline dry-run pass |
+| SLICE-005 | PHASE-008, PHASE-009 | STORY-008, STORY-009 | SLICE-004 | Registration/verification tests green |
+| SLICE-006 | PHASE-010, PHASE-011, PHASE-012 | STORY-010, STORY-011, STORY-012 | SLICE-005 | Login/MFA/reset/access-gating tests green |
+| SLICE-007 | PHASE-013 | STORY-013 | SLICE-006 | Full auth/session suite passes — identity sign-off gate |
+| SLICE-008 | PHASE-014, PHASE-015 | STORY-014, STORY-015 | SLICE-007 | Profile/avatar tests pass |
+| SLICE-009 | PHASE-016, PHASE-017, PHASE-018, PHASE-019 | STORY-016–019 | SLICE-007 | Admin/taxonomy authorization suite passes — unblocks Sprint 4 |
+| SLICE-010 | PHASE-020, PHASE-021 | STORY-020, STORY-021 | SLICE-009 | Thread/reply/lock/hide tests pass |
+| SLICE-011 | PHASE-022, PHASE-023, PHASE-024 | STORY-022–024 | SLICE-010 | Moderation suite passes — completes discussion epic |
+| SLICE-012 | PHASE-025, PHASE-026 | STORY-025, STORY-026 | SLICE-009 | Post/draft tests pass (parallel with SLICE-010) |
+| SLICE-013 | PHASE-027, PHASE-028 | STORY-027, STORY-028 | SLICE-012 | Comment/publish-event tests pass — completes posts epic |
+| SLICE-014 | PHASE-029, PHASE-030, PHASE-031 | STORY-029–031 | SLICE-009 | KB authoring/approval/revision tests pass (parallel with SLICE-010/012) |
+| SLICE-015 | PHASE-032 | STORY-032 | SLICE-014 | KB suite passes — completes KB epic |
+| SLICE-016 | PHASE-033, PHASE-035 | STORY-033, STORY-035 | SLICE-011, SLICE-013, SLICE-015 | Indexing + reconciliation tests pass (hard convergence: all 3 content types) |
+| SLICE-017 | PHASE-034, PHASE-036 | STORY-034, STORY-036 | SLICE-016 | Search query/visibility suite passes — completes search epic |
+| SLICE-018 | PHASE-037, PHASE-038, PHASE-039 | STORY-037–039 | SLICE-011, SLICE-013 | Notification dispatch suite passes |
+| SLICE-019 | PHASE-040, PHASE-041 | STORY-040, STORY-041 | SLICE-011, SLICE-015 | Dashboard suite passes (parallel with SLICE-018) |
+| SLICE-020 | PHASE-042, PHASE-043 | STORY-042, STORY-043 | SLICE-010, SLICE-012, SLICE-006 | Rate-limit/CSRF hardening tests pass (parallel with SLICE-018/019) |
+| SLICE-021 | PHASE-044, PHASE-045 | STORY-044, STORY-045 | SLICE-017–020 | Accessibility + E2E gates green — ship-readiness gate |
+| SLICE-022 | PHASE-046 | STORY-046 | SLICE-021 | Security/log/secrets audit clean — final hardening slice |
+| SLICE-023 | PHASE-047 | STORY-047–051 | SLICE-022 | Docs reviewed — final documentation slice |
 
----
+> **SLICE-016 is a hard convergence point.** It cannot merge until SLICE-011 (discussion), SLICE-013 (posts), and SLICE-015 (KB) are all in `main`. This enforces the design requirement that the search indexer handles all three content types correctly before the search query API is exposed.
 
-### Intent
+> **SLICE-010 / SLICE-012 / SLICE-014 are intentionally independent.** Three developers can work them concurrently once SLICE-009 (taxonomy/roles) merges.
 
-Choose an authentication credential transport that eliminates the primary XSS-based
-credential theft vector and works correctly with server-side rendering.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-SEC-001 | Session tokens must not be accessible via `document.cookie` or `localStorage` |
-| REQ-SEC-002 | CSRF risk must be mitigated without breaking the SSR data-fetch pattern |
-| REQ-SEC-003 | Session revocation must be possible server-side immediately (no short-lived JWT grace period) |
-
-### Decision
-
-The backend issues **HTTP-only, Secure, SameSite=Lax session cookies**. The frontend
-never writes to or reads `document.cookie`; the browser sends the cookie automatically on
-same-site requests. Next.js server components and route handlers read the cookie via
-`cookies()` from `next/headers` and forward it to the internal API. `localStorage` and
-`sessionStorage` are not used for any credential.
-
-CSRF is mitigated by `SameSite=Lax` combined with requiring `Content-Type:
-application/json` (or `multipart/form-data`) on mutating endpoints — plain form-submit
-CSRF attacks cannot set a custom `Content-Type` in cross-origin requests.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| Bearer token in `Authorization` header stored in `localStorage` | `localStorage` is readable by any same-origin JS; XSS gives full session access — fails REQ-SEC-001 |
-| Short-lived JWT + refresh token in HttpOnly cookie | Added complexity; JWTs cannot be revoked until expiry without a blocklist; fails REQ-SEC-003 |
-| `sessionStorage` bearer token | Not accessible after tab close / SSR; effectively browser-memory-only — incompatible with SSR data fetch |
-| OAuth 2.0 PKCE flow (SPA flow) | Appropriate for third-party IdP; over-engineered for an internal session; tokens still need secure storage |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ XSS cannot steal the session token | Cookie is inaccessible to JavaScript at any time |
-| ✅ Immediate server-side revocation | Session record deleted → cookie rejected on next request |
-| ✅ Works seamlessly with SSR | `cookies()` gives server components access before the page renders |
-| ⚠️ Requires HTTPS in all environments | Cookie `Secure` flag means HTTP-only local dev needs careful setup (or `Secure` flag omitted in dev only) |
-| ⚠️ CORS configuration is more complex | Credentials mode must be explicit (`credentials: 'include'`) on client-side `fetch` calls |
-| ⚠️ Multi-subdomain auth needs `COOKIE_DOMAIN` tuning | Must be set correctly per environment |
+> **SLICE-018 / SLICE-019 / SLICE-020 may merge in any order** once their respective prerequisite slices are in `main`.
 
 ---
 
-## ADR-003
+## Story-Level Requirements Traceability
 
-### Title: Backend framework — dedicated Express API service (not Next.js Route Handlers only)
+Each story maps to one or more functional requirements defined in [Requirements](./requirements.md). The table below provides the cross-reference for audit and review purposes.
 
-**Status:** Accepted
-**Date:** 2024-01-16
-**Deciders:** Engineering lead, backend team
+| Story | Functional Requirement(s) | Key AC IDs | VER IDs |
+|-------|--------------------------|-----------|---------|
+| STORY-001 | FR-12.1, FR-12.2 | — | VER-018 |
+| STORY-002 | FR-12.3, FR-12.4 | — | VER-015, VER-018 |
+| STORY-003 | FR-12.5 | — | VER-019 |
+| STORY-004 | FR-12.6, FR-12.7, FR-12.8 | — | VER-006, VER-013 |
+| STORY-008 | FR-01.8, FR-01.9 | — | VER-005–007 |
+| STORY-009 | FR-01.1, FR-01.2 | AC-001.x, AC-002.x | VER-001, VER-012 |
+| STORY-010 | FR-01.3, FR-01.4, FR-01.5 | AC-003.x, AC-004.x | VER-001, VER-016, VER-017 |
+| STORY-011 | FR-01.6, FR-01.7 | AC-005.1, AC-005.2 | VER-008, VER-012 |
+| STORY-012 | FR-01.10, FR-01.11 | AC-033.x | VER-004 |
+| STORY-014 | FR-02.1 | AC-007.x | VER-004, VER-010 |
+| STORY-015 | FR-02.2 | — | VER-021 |
+| STORY-016 | FR-03.1, FR-03.2 | AC-008.1/.2/.4 | VER-004, VER-008 |
+| STORY-017 | FR-03.3 | AC-032.1/.2 | VER-004 |
+| STORY-018 | FR-04.1 | AC-028.2 | VER-004 |
+| STORY-020 | FR-05.1 | AC-009.3 | VER-002, VER-010 |
+| STORY-021 | FR-05.2, FR-05.3, FR-05.4 | AC-010.2, AC-012.3, AC-013.2/.3 | VER-002 |
+| STORY-022 | FR-06.1 | AC-015.2 | VER-002 |
+| STORY-023 | FR-06.2, FR-06.3 | AC-014.3/.4 | VER-002, VER-004 |
+| STORY-025 | FR-07.1, FR-07.2 | AC-016.1/.3 | VER-002, VER-010 |
+| STORY-026 | FR-07.3 | AC-017.1, AC-019.3 | VER-004 |
+| STORY-027 | FR-07.4 | — | VER-002 |
+| STORY-029 | FR-08.1 | AC-022.2/.3 | VER-002, VER-010 |
+| STORY-030 | FR-08.2, FR-08.3 | AC-023.1/.2, AC-025.3 | VER-002, VER-004 |
+| STORY-031 | FR-08.4 | AC-026.1/.2 | VER-002, VER-004 |
+| STORY-033 | FR-09.1 | AC-027.5 | VER-003 |
+| STORY-034 | FR-09.2 | AC-027.3/.4 | VER-003, VER-009 |
+| STORY-035 | FR-09.3 | — | VER-003 |
+| STORY-037 | FR-10.1 | — | VER-004 |
+| STORY-038 | FR-10.2 | AC-029.2 | VER-024 |
+| STORY-040 | FR-11.1 | AC-030.x | VER-004 |
+| STORY-042 | NFR-04 (rate limit) | AC-031.2 | VER-020 |
+| STORY-043 | NFR-004 (CSRF) | — | VER-013, VER-014 |
+## Original Intent
 
----
-
-### Intent
-
-Decide whether the API layer should live entirely inside Next.js Route Handlers or as a
-separate independently-deployable Node.js service.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-API-001 | API must be independently scalable from the frontend |
-| REQ-API-002 | API must be consumable by future mobile or third-party clients (not just the Next.js frontend) |
-| REQ-API-003 | Team has deep Express expertise and existing reusable middleware |
-
-### Decision
-
-The backend is a **dedicated Express 4 / Node.js service** deployed as its own ECS Fargate
-task. It exposes a versioned REST API at `/api/v1/…`. The Next.js frontend communicates
-with it over the internal VPC network via `API_INTERNAL_URL`. External browser-side fetch
-calls also route to it via CloudFront → ALB path-based routing on `/api/*`.
-
-Next.js Route Handlers are used only for thin server-side proxying, redirect logic, and
-BFF patterns that are tightly coupled to the UI — not for business logic.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| All API in Next.js Route Handlers | Cannot scale independently; couples frontend and API deploy cycles; harder to version; does not satisfy REQ-API-002 |
-| GraphQL (Apollo Server) | Over-engineered for a CRUD-heavy domain at this scale; adds client-side caching complexity; team has limited Apollo expertise |
-| tRPC | Excellent DX for a TypeScript monorepo but couples frontend and backend build; less suitable for future non-TS consumers |
-| NestJS | Solid choice but larger learning curve; Express is familiar and sufficient for current complexity |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Independent scaling | Frontend and API ECS services can scale to different task counts |
-| ✅ Clear contract boundary | OpenAPI / generated TypeScript types enforce the contract; no implicit coupling |
-| ✅ Future-proof | Mobile or third-party clients can consume `/api/v1/…` directly |
-| ⚠️ Two services to maintain | Two Docker images, two ECS service definitions, two deploy targets |
-| ⚠️ Network hop for SSR data | Server components call the internal API over HTTP; adds ~1–2 ms on the private VPC network (acceptable) |
+Build a production-grade, AWS-native web platform that delivers identity and session management, user profiles, content publishing, full-text search, event-driven notifications, and an administration console — with security, observability, and operational excellence as first-class constraints. The platform must be deployable to two environments (beta and prod) via infrastructure-as-code and must adhere strictly to an AWS-only cloud guardrail.
 
 ---
 
-## ADR-004
+## Requirements Summary
 
-### Title: Database — Aurora PostgreSQL Serverless v2
+### Functional
 
-**Status:** Accepted
-**Date:** 2024-01-16
-**Deciders:** Engineering lead, infrastructure team
+- **FR-001 (Identity & Session):** Registration with email verification; login; MFA challenge/verify; failed-attempt lockout + owner alert; password reset with enumeration-safe response; session invalidation (all sessions) on reset; deny-by-default access gating with post-login redirect. (EPIC-002, TASK-015–024)
+- **FR-002 (Profile):** Self-only `GET/PUT /api/v1/profile` with output encoding; pre-signed S3 avatar PUT/GET URL with content-type and size validation; private bucket with no public ACL. (EPIC-003, TASK-025–026)
+- **FR-003 (Admin Account Management):** Admin activate/deactivate/delete with forced session invalidation; 403 for non-admin access. (EPIC-003, TASK-027–028)
+- **FR-004 (Admin Role Assignment):** Moderator/Contributor role assign/revoke with per-request re-evaluation — role change effective without re-login. (EPIC-003, TASK-029)
+- **FR-005 (Taxonomy):** Category/tag CRUD + archive (soft-state: archived category not selectable for new content but preserved on existing). (EPIC-003, TASK-030)
+- **FR-006 (Discussion):** Thread create/list/filter/sort with sanitization; reply with lock-state rejection (423) and length validation; hide-state filtering (excluded from non-moderator views); non-author-edit 403; content-created EventBridge event on thread creation. (EPIC-004, TASK-032–035)
+- **FR-007 (Moderation):** Report intake with duplicate-report unique constraint (409); moderator queue listing + lock/hide/delete actions; every action writes immutable audit record; 403 for non-moderator. (EPIC-004, TASK-036–037)
+- **FR-008 (Posts):** Post create (draft/publish) with server-side sanitization; draft-only-visible-to-author/admin; edit/delete ownership enforcement; comment create; publish-state EventBridge event only on publish (not draft save). (EPIC-005, TASK-039–042)
+- **FR-009 (Knowledge Base):** Contributor-only article create with sanitization (403 for non-Contributor); moderator/admin approve/reject with EventBridge event on approval; 404 for unapproved article on non-privileged direct URL access; append-only revision history restricted to author/moderator/admin. (EPIC-006, TASK-044–047)
+- **FR-010 (Search):** Event-driven OpenSearch indexing (idempotent by entity_type/entity_id/version); hidden/unapproved content excluded; `GET /api/v1/search` with safe parameterized query and role-aware visibility filter; empty-state on no results; scheduled/manual full-reindex job (idempotent upsert). (EPIC-007, TASK-049–051)
+- **FR-011 (Notifications):** Preference GET/PUT and notification list (self-only); SQS consumer/Lambda worker honoring opt-out; failed email falls back to in-portal only with no user-facing error. (EPIC-008, TASK-053–054)
+- **FR-012 (Admin Dashboard):** Cross-content aggregation dashboard (accounts, content volume, moderation stats); admin-only access. (EPIC-009, TASK-056)
+- **FR-013 (Infrastructure):** VPC/subnets/route tables (≥2 AZs); IAM roles (least-privilege, no long-lived keys); CI/CD SAST/SCA gates blocking critical/high findings; IaC plan-review gate for staging/prod applies; CloudWatch log groups + X-Ray; WAF with OWASP managed rules; API Gateway/ALB TLS 1.2+; Aurora KMS-encrypted (private-only); Redis replication group (multi-AZ, private-only). (EPIC-001, TASK-001–012)
 
----
+### Non-Functional
 
-### Intent
-
-Choose a managed relational database that supports the application's data model, meets
-durability and availability requirements, and is cost-effective across non-production and
-production environments.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-DB-001 | ACID transactions required for multi-entity writes |
-| REQ-DB-002 | Relational schema with foreign-key constraints and joins |
-| REQ-DB-003 | Non-production environments should not incur idle database costs |
-| REQ-DB-004 | Database must have no public endpoint (private subnet only) |
-| REQ-INFRA-001 | All infrastructure must be on AWS |
-
-### Decision
-
-Use **Amazon Aurora PostgreSQL Serverless v2** (PostgreSQL 15 compatible). Serverless v2
-scales ACUs (Aurora Capacity Units) down to 0.5 ACU in low-traffic environments and scales
-up in sub-second increments. Production uses a minimum of 1 ACU and a read replica for
-read-heavy workloads. The Prisma ORM communicates with Aurora over a standard PostgreSQL
-wire protocol; no Aurora-specific driver is needed.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| RDS PostgreSQL (provisioned) | Higher minimum cost for non-production; requires manual scaling; no auto-pause |
-| Aurora Serverless v1 | HTTP Data API only — not compatible with Prisma's standard connection pooling; cold-start latency higher |
-| DynamoDB | No joins or ACID transactions; schema-less model conflicts with a relational domain model |
-| PlanetScale (MySQL) | Not AWS-native; cross-provider dependency; MySQL syntax differences with Prisma |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Scales to near-zero in dev/staging | Reduces idle compute cost significantly |
-| ✅ PostgreSQL-compatible | Standard Prisma + `pg` client; no vendor lock-in on the ORM layer |
-| ✅ Automatic storage scaling | No manual volume resizing |
-| ⚠️ Cold-start latency | First query after an idle period may take 1–5 s in low-traffic environments; mitigated by keeping min ACU ≥ 0.5 |
-| ⚠️ Aurora-specific pricing model | ACU-based pricing can be hard to forecast; monitoring alerts are required |
-| ⚠️ VPC-only access | Local development uses a Dockerised PostgreSQL 15 instance; production uses Aurora — minor schema parity risk managed by Prisma migrations |
+- **NFR-003 (Cookie security):** Session cookie issued with `HttpOnly`, `Secure`, and `SameSite=Strict` attributes. (TASK-014)
+- **NFR-004 (CSRF):** CSRF token middleware on all state-changing endpoints; requests without valid token rejected. (TASK-059, VER-014)
+- **NFR-005 (Security headers):** CSP, HSTS, `X-Frame-Options`, `X-Content-Type-Options` present on all responses. (TASK-008, VER-013)
+- **NFR-006 (AWS-only):** All runtime infrastructure in approved AWS accounts/regions. IAM roles for workload identity; no long-lived access keys.
+- **NFR-008 (Encryption):** TLS 1.2+ in transit; AES-256 at rest for Aurora, S3, ElastiCache, OpenSearch.
+- **NFR-009 (Logging hygiene):** Structured logs must not contain credentials, tokens, or PII beyond user ID. (TASK-063, VER-019)
+- **NFR-010 (SCA gate):** CI pipeline blocks on critical/high SCA findings. (TASK-003, CON-004, VER-015)
+- **NFR-016 (Correlation ID):** Structured JSON logs include a `correlationId` field on every request. (TASK-005, VER-019)
+- **NFR-019 (Responsive):** No layout breakage at defined breakpoints (mobile/tablet/desktop). (TASK-061, VER-023)
+- **NFR-WCAG (Accessibility):** WCAG 2.1 AA target; no critical/serious axe-core violations; manual audit sign-off. (TASK-060, VER-022)
 
 ---
 
-## ADR-005
+## Plan Summary
 
-### Title: Infrastructure-as-Code — AWS CDK (TypeScript)
+| Phase | Goal | Key Deliverables | Tasks |
+|-------|------|-----------------|-------|
+| PHASE-001 | Network & Compute Foundation | VPC, subnets, security groups, IAM roles | TASK-001–002 |
+| PHASE-002 | IaC Baseline & CI/CD Security Gates | CI pipeline with SAST/SCA + IaC plan-review gate | TASK-003–004 |
+| PHASE-003 | Observability & WAF Edge | CloudWatch log groups, X-Ray, WAF with OWASP rules | TASK-005–006 |
+| PHASE-004 | API Edge Gateway & Security Headers | TLS 1.2+, CSP/HSTS/X-Frame headers, CORS policy | TASK-007–008 |
+| PHASE-005 | Shared Design-System | React component library: buttons, forms, pagination, states | TASK-009 |
+| PHASE-006 | Baseline Data Stores | Aurora KMS-encrypted + ElastiCache Redis replication group | TASK-010–011 |
+| PHASE-007 | Foundation Validation | Pipeline dry-run with vuln/secret test fixtures | TASK-012 |
+| PHASE-008 | Session Store Integration | Redis-backed session create/read/expire/invalidate + secure cookie | TASK-013–014 |
+| PHASE-009 | Registration & Email Verification | `POST /api/v1/auth/register`, SES verification token | TASK-015–016 |
+| PHASE-010 | Login, MFA & Lockout | Login, lockout/delay + owner alert, MFA challenge/verify | TASK-017–019 |
+| PHASE-011 | Password Reset & Session Invalidation | Enumeration-safe reset, all-session invalidation | TASK-020–021 |
+| PHASE-012 | Access-Gating & Redirect Enforcement | Deny-by-default middleware, post-login redirect | TASK-022–023 |
+| PHASE-013 | Identity & Session Validation | Full auth/session automated test suite in CI | TASK-024 |
+| PHASE-014 | Member Profile Service | `GET/PUT /api/v1/profile` self-only, output-encoded | TASK-025 |
+| PHASE-015 | Media/Asset Adapter | Pre-signed PUT/GET with content-type/size validation | TASK-026 |
+| PHASE-016 | Admin Account Management | Account status endpoints + forced session invalidation | TASK-027–028 |
+| PHASE-017 | Admin Role Assignment | Role assign/revoke with per-request re-evaluation | TASK-029 |
+| PHASE-018 | Taxonomy Management | Category/tag CRUD + archive | TASK-030 |
+| PHASE-019 | Profile/Admin/Taxonomy Validation | Authorization negative-test matrix across 5 roles | TASK-031 |
+| PHASE-020 | Discussion Thread CRUD | Thread create/list/filter/sort + EventBridge event | TASK-032–033 |
+| PHASE-021 | Discussion Reply, Lock & Hide State | Reply with lock-state rejection, hide-state filtering | TASK-034–035 |
+| PHASE-022 | Moderation Report Intake | Report endpoint with duplicate-report constraint | TASK-036 |
+| PHASE-023 | Moderation Review Queue & Actions | Queue listing + lock/hide/delete + audit trail | TASK-037 |
+| PHASE-024 | Discussion & Moderation Validation | Full suite incl. rate-limit checks | TASK-038 |
+| PHASE-025 | Post/Draft CRUD | Post create (draft/publish) with sanitization | TASK-039–040 |
+| PHASE-026 | Draft Visibility & Ownership | Draft-only-visible filter, 404 on non-owner draft access | TASK-041 |
+| PHASE-027 | Post Comments & Publish Events | Comment create + notification EventBridge event | TASK-042 |
+| PHASE-028 | Post Validation Suite | Automated post-service test suite | TASK-043 |
+| PHASE-029 | KB Article Authoring | Contributor-role-gated article create + sanitization | TASK-044 |
+| PHASE-030 | KB Approval/Rejection Workflow | Approve/reject + visibility enforcement | TASK-045–046 |
+| PHASE-031 | KB Revision History | Append-only revision on save, restricted access | TASK-047 |
+| PHASE-032 | KB Validation Suite | Automated KB test suite | TASK-048 |
+| PHASE-033 | Search Indexing Pipeline | Event consumer, idempotent upsert, STORE-007 mapping | TASK-049 |
+| PHASE-034 | Search Query API | `GET /api/v1/search` with visibility filter + injection prevention | TASK-050 |
+| PHASE-035 | Search Index Reconciliation Job | Scheduled/manual full-reindex job | TASK-051 |
+| PHASE-036 | Search Validation Suite | Suite incl. injection and visibility-leakage tests | TASK-052 |
+| PHASE-037 | Notification Preference API | Preference GET/PUT + notification list | TASK-053 |
+| PHASE-038 | Notification Dispatch Worker | SQS consumer/Lambda honoring opt-out + SES fallback | TASK-054 |
+| PHASE-039 | Notification Validation Suite | E2E scenario: reply → notification → opt-out suppression | TASK-055 |
+| PHASE-040 | Admin Dashboard Aggregation | Dashboard aggregation queries (admin-only) | TASK-056 |
+| PHASE-041 | Admin Dashboard Validation | Data accuracy + role restriction tests | TASK-057 |
+| PHASE-042 | Fine-Grained Rate Limiting | Per-account/per-window limits on reg/login/content | TASK-058 |
+| PHASE-043 | CSRF & Security Headers Hardening | CSRF middleware on all state-changing endpoints | TASK-059 |
+| PHASE-044 | Accessibility & Responsive Verification | axe-core scan + manual audit + cross-viewport tests | TASK-060–061 |
+| PHASE-045 | E2E Critical Journey Verification | JRN-001–009 happy-path + key alternates | TASK-062 |
+| PHASE-046 | Security, Log & Secrets Compliance Audit | Log PII review + IaC hardcoded-secret scan | TASK-063–064 |
+| PHASE-047 | Documentation Suite | README, architecture, getting-started, decision log, contributing guide | TASK-065–069 |
 
-**Status:** Accepted
-**Date:** 2024-01-17
-**Deciders:** Engineering lead, infrastructure team
-
----
-
-### Intent
-
-Choose an IaC tool that allows the infrastructure to be declared, versioned, reviewed, and
-deployed with the same rigour as application code, and that is idiomatic for a TypeScript
-monorepo on AWS.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-INFRA-001 | All infrastructure must be on AWS |
-| REQ-INFRA-002 | Infrastructure changes must be code-reviewed and version-controlled |
-| REQ-INFRA-003 | IaC must be written in a language the team already knows |
-| REQ-INFRA-004 | IaC must produce repeatable environment bootstrapping |
-
-### Decision
-
-Use **AWS CDK v2 (TypeScript)**. CDK synthesises to CloudFormation, which AWS natively
-supports. The `infra/` package uses the same TypeScript toolchain and `tsconfig` conventions
-as the rest of the monorepo. Constructs are typed; mis-configured resources are caught at
-synth time rather than deploy time where possible.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| AWS CloudFormation (raw YAML/JSON) | Verbose; no abstraction or type safety; error messages are poor |
-| Terraform / OpenTofu | Excellent but introduces HCL — a second language; requires separate state backend setup |
-| Pulumi (TypeScript) | Viable alternative; less mature AWS L2 constructs; smaller community than CDK for AWS-specific patterns |
-| AWS SAM | Optimised for serverless; not appropriate for an ECS-based architecture |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Same language as app code | No context-switching; application engineers can read and contribute to infra |
-| ✅ High-level constructs (L2/L3) | Sensible defaults for VPC, ECS, ALB, etc. reduce boilerplate and encoding errors |
-| ✅ Type safety catches misconfiguration early | `cdk synth` fails on type errors before any AWS API call |
-| ⚠️ CDK abstraction leaks | L2 constructs sometimes hide important CloudFormation properties; escape hatches (`addPropertyOverride`) are occasionally needed |
-| ⚠️ CloudFormation dependency | Underlying CloudFormation limits (500 resources/stack, deployment timeouts) still apply |
-| ⚠️ Bootstrap required | `cdk bootstrap` must be run once per account/region before the first deploy |
-
----
-
-## ADR-006
-
-### Title: ORM and data access layer — Prisma
-
-**Status:** Accepted
-**Date:** 2024-01-17
-**Deciders:** Backend team
+> Full plan detail: [plan.md](./plan.md)
 
 ---
 
-### Intent
+## Design Decisions
 
-Choose a data access layer that provides type-safe queries derived from the database
-schema, manages migrations reliably, and integrates cleanly with the TypeScript + Zod
-validation stack.
+| Area | Decision | Rationale |
+|------|----------|-----------|
+| **Compute** | ECS/Fargate (pending DEC-005 final lock-in) | Serverless containers reduce operational overhead vs EC2; avoids Kubernetes complexity for this scale |
+| **Database** | Aurora PostgreSQL (Serverless v2 / Provisioned) | Multi-AZ HA, PostgreSQL compatibility, familiar relational model; DynamoDB considered but relational integrity required |
+| **Cache / Sessions** | ElastiCache Redis (`STORE-002`) | Token blacklist needs atomic set operations; Redis TTL semantics fit JWT revocation and rate-limit counters; ElastiCache is fully managed |
+| **Async messaging** | EventBridge + SQS (`IF-017`) | EventBridge for schema-aware event routing + replay; SQS for per-consumer durable queues with DLQ; decouples API write path from search indexing and notification dispatch |
+| **Email / in-portal notifications** | AWS SES (email) + in-portal fallback (COMP-008) | SES is the confirmed MVP channel; in-portal is the graceful fallback on SES failure (AC-029.2); SNS Push / SMS deferred to DEC-002 |
+| **IaC** | OpenTofu with per-environment var-files | Open-source Terraform-compatible; per-env `beta.tfvars` / `prod.tfvars` for clean environment separation; AWS-provider-only |
+| **Secrets** | AWS Secrets Manager | Rotation support, CloudTrail audit, fine-grained IAM; injected into ECS tasks at launch — never baked into images |
+| **Session cookie** | `HttpOnly; Secure; SameSite=Strict` (TASK-014) | Mitigates XSS-based token theft and CSRF; satisfies NFR-003 |
+| **Role evaluation model** | Per-request DB re-evaluation for privilege-sensitive operations (TASK-029) | Ensures moderator/admin role changes are effective immediately without re-login (AC-032.1/.2); avoids stale-claim vulnerability from long-lived role-in-JWT designs |
+| **WAF** | AWS WAF in front of ALB (`infra/waf/`) | OWASP managed rule group, rate limiting, bot control — reduces OWASP Top 10 surface at the edge without application code changes; TASK-006 |
+| **Observability** | CloudWatch + X-Ray (`infra/observability/`) | AWS-native; structured JSON logs with `correlationId`; X-Ray trace propagation across ECS tasks; no third-party SaaS required (NFR-016) |
+| **Search indexing idempotency** | Idempotent upsert keyed on `(entity_type, entity_id, version)` | Handles SQS redelivery without duplication; safe for full-reindex reconciliation (TASK-049/051) |
+| **KB approval workflow** | Moderator/admin approve/reject before content becomes visible | Prevents unapproved KB articles from leaking into search index or member views (AC-023.1/.2, AC-025.3); EventBridge event on approval triggers indexing |
+| **Moderation audit trail** | Append-only Aurora `audit_log` table + structured CloudWatch log | Satisfies AC-014.3/.4 (immutable per-action record) and NFR-016 (structured correlation log) |
+| **Draft visibility** | 404 (not 403) on non-owner draft access | Avoids content-existence enumeration; satisfies AC-017.1, AC-019.3 (TASK-041) |
+| **Report deduplication** | Unique constraint on `(reporter_id, target_id)` → 409 | Prevents spam reporting; satisfies AC-015.2 (TASK-036) |
+| **CSRF protection** | CSRF token middleware on all state-changing endpoints (`services/*/middleware/csrf.*`) | Mitigates CSRF attacks on session-cookie-based auth (NFR-004, VER-014, TASK-059) |
+| **Rate limiting** | Per-account/per-window limits in Redis, layered under edge WAF throttling | Dual-layer defense: WAF handles broad IP-level throttling; Redis handles per-account abuse (TASK-058, AC-031.2, VER-020) |
 
-### Requirements context
+### Open Decisions (blocking production lock-in)
 
-| Requirement | Detail |
-|-------------|--------|
-| REQ-DB-005 | All database queries must be parameterised (SQL injection prevention) |
-| REQ-BE-001 | Query result types must be inferred from the schema — no hand-written DTOs |
-| REQ-BE-002 | Migration workflow must be trackable in Git and runnable in CI |
+| ID | Topic | Blocked Stories | Expected Resolution |
+|----|-------|-----------------|---------------------|
+| DEC-001 | Server-side content sanitiser library selection | TASK-032 (threads), TASK-039 (posts), TASK-044 (KB) | Before PHASE-020 ships to prod |
+| DEC-002 | Notification channel scope (SMS / Push beyond SES + in-portal) | TASK-054 (notification dispatch) | Before PHASE-038 ships to prod |
+| DEC-003 | Sanitiser HTML whitelist configuration | Same as DEC-001 | Before PHASE-020 ships to prod |
+| DEC-005 | Compute platform final lock-in (ECS vs EKS vs App Runner) | TASK-001 (VPC/network), TASK-010 (Aurora) | Before PHASE-001 prod apply |
+| DEC-006 | OpenSearch cluster sizing and node type | TASK-049 (search indexer) | Before PHASE-033 prod apply |
 
-### Decision
-
-Use **Prisma ORM** as the sole data access layer in the backend. The `schema.prisma` file
-is the single source of truth for the data model. Prisma Client is regenerated on `npm
-install` and whenever the schema changes. Zod schemas for API request validation are
-derived from Prisma types using `zod-prisma-types` or hand-authored to match the generated
-Prisma model shapes — no independent DTO drift.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| TypeORM | Decorator-heavy; less predictable migration behaviour; generated types less ergonomic than Prisma Client |
-| Drizzle ORM | Promising but younger; less mature migration tooling at evaluation time |
-| Knex.js (query builder) | No type safety without separate schema definitions; requires hand-writing DTOs |
-| Raw `pg` queries | Maximum control but high boilerplate; no migration management; type safety requires manual mapping |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Type-safe queries inferred from schema | Refactoring a model field produces TypeScript errors at every call site |
-| ✅ Parameterised queries by default | No string interpolation into SQL; injection is structurally prevented |
-| ✅ Migration management in Git | `prisma/migrations/` is version-controlled; CI applies them in order |
-| ⚠️ Prisma Client bundle size | The generated client is relatively large; acceptable for a server-side-only usage (never shipped to the browser) |
-| ⚠️ Complex joins require raw SQL | Very complex analytical queries fall back to `$queryRaw` — still parameterised via tagged templates |
-| ⚠️ Schema-first only | Schema must be updated before application code can use a new column — enforces discipline but adds a migration step |
+> See [Design](./design.md) §16–17 for full open-decision records and owners.
 
 ---
 
-## ADR-007
+## Security Notes
 
-### Title: Monorepo structure — single Git repo, independent workspaces
-
-**Status:** Accepted
-**Date:** 2024-01-14
-**Deciders:** Engineering lead
+- Authentication (Identity epic, PHASE-008–013) completes before any Profile, Admin, Content, or Search API surface is exposed (PHASE-014+) — satisfying the "auth precedes exposure" guardrail rule.
+- All OWASP Top 10 categories are addressed: WAF OWASP managed rules (A01/A05, TASK-006); JWT + Redis revocation + per-request role re-evaluation (A07, TASK-017/029); parameterised queries / ORM (A03, TASK-032/039/044/050); Secrets Manager (A02/A09); structured logging without sensitive data (A09, TASK-063, VER-019); SCA/SAST gates in CI (A06/A08, TASK-003, VER-015); server-side input validation + sanitisation (A03/A04, pending DEC-001/DEC-003); SSRF egress restricted to known AWS endpoints via security group (A10); CSRF middleware on all state-changing endpoints (NFR-004, TASK-059, VER-014).
+- Dedicated PHASE-046 security/log/secrets compliance audit (TASK-063–064) runs after all feature phases and E2E suite before documentation phase.
 
 ---
 
-### Intent
-
-Decide whether to host the frontend and backend in the same repository or in separate
-repositories.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-DX-001 | A single PR should be able to change frontend and backend together for atomic feature work |
-| REQ-DX-002 | Frontend and backend must be independently buildable and deployable |
-| REQ-DX-003 | Shared types between frontend and backend must be kept in sync without a separate publish step |
-
-### Decision
-
-Use a **single Git monorepo** with two independent npm workspaces (`frontend/` and
-`backend/`). Each workspace has its own `package.json`, `node_modules`, lockfile, build
-output, and Docker image. There is no root-level `node_modules` hoisting. Shared types are
-consumed through the generated API client (sourced from the backend's OpenAPI spec) rather
-than a shared package — this avoids coupling the build systems.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| Separate repositories (polyrepo) | Harder to make atomic cross-cutting changes; diverging tooling versions; friction for a small team |
-| Turborepo / Nx monorepo with shared packages | Worthwhile at larger scale; adds tooling complexity for a two-app repo at this stage; can be adopted later |
-| Single Next.js project (API routes only) | Rejected in ADR-003 — API must scale and deploy independently |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Atomic cross-cutting PRs | Frontend and backend changes ship together; reviewers see full context |
-| ✅ Single CI pipeline configuration | One `.github/workflows/` directory; shared lint/test matrix |
-| ⚠️ No shared package | Types shared via generated client; requires regeneration after backend contract changes |
-| ⚠️ Repo clone includes both apps | Developers working only on one app still clone everything — acceptable for current team size |
-
----
-
-## ADR-008
-
-### Title: Container platform — ECS Fargate (not EKS or EC2)
-
-**Status:** Accepted
-**Date:** 2024-01-18
-**Deciders:** Infrastructure team, engineering lead
-
----
-
-### Intent
-
-Choose a container orchestration platform on AWS that provides production-grade
-reliability without requiring the team to manage control-plane infrastructure or become
-Kubernetes operators.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-INFRA-001 | All infrastructure must be on AWS |
-| REQ-INFRA-005 | The team should not need to manage container orchestration infrastructure |
-| REQ-INFRA-006 | Rolling deploys with zero downtime must be supported |
-| REQ-SCALE-001 | The platform must support horizontal scaling of both frontend and backend services independently |
-
-### Decision
-
-Use **Amazon ECS with Fargate launch type**. ECS manages scheduling and orchestration;
-Fargate manages the underlying compute — no EC2 instances or node groups to patch. Each
-application (frontend, backend) is an independent ECS service with its own task definition,
-auto-scaling policy, and health-check configuration. Rolling deploys are handled natively
-by ECS.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| Amazon EKS | Kubernetes expertise required for day-2 operations; control plane cost; over-engineered for two services |
-| ECS on EC2 | Must manage EC2 fleet patching and capacity; Fargate removes this operational burden |
-| AWS App Runner | Simpler but fewer networking controls (VPC integration, private subnets, SG rules); less configurable for our security requirements |
-| AWS Lambda (containerised) | Cold-start latency unacceptable for a server-rendered frontend; 15-minute execution limit unsuitable for a persistent Express server |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ No cluster node management | AWS manages Fargate compute patching and availability |
-| ✅ Per-task CPU/memory billing | No idle EC2 cost; pay only for running tasks |
-| ✅ Native ECS rolling deploys | Zero-downtime deploys with configurable `minimumHealthyPercent` / `maximumPercent` |
-| ⚠️ Fargate startup latency | New tasks take ~30–60 s to start; scale-out events lag slightly behind traffic spikes; mitigated by scheduled scaling |
-| ⚠️ ECS is AWS-proprietary | Workload is less portable than Kubernetes; acceptable given the AWS-only mandate |
-
----
-
-## ADR-009
-
-### Title: Secret management — AWS Secrets Manager (not Parameter Store or env bake)
-
-**Status:** Accepted
-**Date:** 2024-01-18
-**Deciders:** Engineering lead, security review
-
----
-
-### Intent
-
-Define how runtime secrets (database passwords, session keys, third-party API keys) are
-stored, distributed, and rotated without ever appearing in Docker images, CI logs, or
-application config files.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-SEC-004 | No secret must appear in a Docker image layer, a CI log, or a committed file |
-| REQ-SEC-005 | Secrets must be rotatable without redeploying application code |
-| REQ-SEC-006 | Access to secrets must be audited and scoped to least privilege |
-
-### Decision
-
-All runtime secrets are stored in **AWS Secrets Manager**. ECS task definitions reference
-secrets by ARN in the `secrets` block; ECS injects them as environment variables at task
-startup using the task execution role. The task execution role is granted `secretsmanager:GetSecretValue`
-only on the specific secret ARNs it needs (least privilege). Application code reads secrets
-from environment variables — no SDK calls to Secrets Manager at runtime. Rotation is
-handled by Secrets Manager rotation Lambdas (for database passwords) or manual rotation
-with version staging for static secrets.
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| SSM Parameter Store (SecureString) | Cheaper but less feature-rich rotation; Secrets Manager preferred for credentials that benefit from automated rotation |
-| Environment variables baked into Docker image | Secrets embedded in image layers — violates REQ-SEC-004; unacceptable |
-| GitHub Actions secrets as ECS env vars | CI secrets are deployment-time values, not runtime values; conflating the two creates rotation and audit complexity |
-| HashiCorp Vault | Not AWS-native; adds operational overhead; requires self-managed HA cluster |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ Secrets never in image layers or logs | ECS injects at task start; never `printenv`-visible in CI |
-| ✅ Audit trail | Every `GetSecretValue` call is logged in CloudTrail |
-| ✅ Rotation without redeploy | Secrets Manager rotation Lambdas can rotate credentials; ECS picks up new values on next task start or forced redeploy |
-| ⚠️ Secrets Manager cost | ~$0.40/secret/month + API call charges — negligible at this scale |
-| ⚠️ ECS task role must have correct IAM | Misconfigured IAM = task fails to start; caught in staging before production |
-
----
-
-## ADR-010
-
-### Title: CI/CD — GitHub Actions with OIDC federation (no long-lived AWS keys)
-
-**Status:** Accepted
-**Date:** 2024-01-19
-**Deciders:** Engineering lead, security review
-
----
-
-### Intent
-
-Design a CI/CD pipeline that builds, tests, and deploys both applications to AWS without
-storing long-lived AWS credentials in GitHub or any CI secret store.
-
-### Requirements context
-
-| Requirement | Detail |
-|-------------|--------|
-| REQ-SEC-007 | No long-lived AWS IAM access keys must exist for CI/CD |
-| REQ-CI-001 | Every PR must run lint, type-check, tests, and a build check |
-| REQ-CI-002 | Merge to `main` must automatically deploy to staging |
-| REQ-CI-003 | Production deploy must be triggered by a version tag and must not require manual credential rotation |
-
-### Decision
-
-Use **GitHub Actions** as the CI/CD platform. AWS credentials are obtained via **OIDC
-federation**: GitHub Actions assumes a scoped AWS IAM role using a short-lived OIDC token
-— no `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` secrets are stored in GitHub. The IAM
-role trust policy restricts assumption to the specific GitHub org, repo, and branch/tag
-ref. The role has least-privilege permissions: ECR push, ECS update-service, and
-Secrets Manager read for deploy-time config only.
-
-Pipeline stages:
-
-| Trigger | Jobs |
-|---------|------|
-| PR opened / updated | `lint` → `type-check` → `test` → `build-check` (all in parallel per workspace) |
-| Merge to `main` | `build-and-push` (ECR) → `deploy-staging` (ECS rolling update) |
-| Push `v*` tag | `promote-to-production` (re-tag staging image → ECS production deploy) |
-
-### Alternatives considered
-
-| Option | Reason rejected |
-|--------|----------------|
-| Long-lived IAM access keys in GitHub Secrets | Violates REQ-SEC-007; keys cannot be automatically rotated; breach of GitHub gives permanent AWS access |
-| AWS CodePipeline + CodeBuild | No OIDC concern (IAM roles natively), but GitHub integration is a paid add-on; team prefers GitHub-native workflows |
-| CircleCI / Jenkins | Viable but introduces a third platform; OIDC support exists but is less documented than GitHub Actions |
-
-### Trade-offs and consequences
-
-| Trade-off | Detail |
-|-----------|--------|
-| ✅ No persistent AWS credentials in GitHub | OIDC tokens are short-lived (15 min); breach of CI does not give long-term AWS access |
-| ✅ Automatic credential expiry | Tokens expire after the job completes; no rotation schedule required |
-| ✅ CloudTrail audit | All AWS API calls from CI are attributed to the OIDC-assumed role and logged |
-| ⚠️ OIDC trust policy must be correctly scoped | Over-broad trust (e.g., allowing any branch to assume the production deploy role) is a misconfiguration risk; mitigated by branch/tag ref conditions in the trust policy |
-| ⚠️ GitHub is a trust boundary | GitHub Actions runner compromise → temporary AWS access within the role's permissions; mitigated by least-privilege role policy and short token lifetime |
-
----
-
-## Design Notes (DSN-001 – DSN-009)
-
-> Design Notes capture implementation-level choices within the boundaries set by the ADRs
-> above. They are cross-referenced to architecture Section 2 (component model) and Section 6
-> (security boundaries). They do not supersede ADRs; if a DSN reveals a need to revisit an
-> ADR, a new ADR must be opened.
-
----
-
-### DSN-001 — `middleware.ts` session-verification strategy
-
-**Relates to:** ADR-001, ADR-002 | **Architecture ref:** §2 COMP-003, §6 security boundaries
-**Status:** Accepted | **Date:** 2024-01-20
-
-**Context:** `middleware.ts` runs on every request to the Next.js service. It must decide
-quickly whether to pass through or redirect to `/login`, without introducing a per-request
-round-trip to the backend for every static asset or public route.
-
-**Decision:**
-- Apply the middleware only to the path matcher `['/((?!_next/static|_next/image|favicon.ico|public).*)']`.
-- Check for the presence and cryptographic validity of the session cookie using a lightweight
-  HMAC verify (shared `SESSION_SECRET`) — no database call in middleware.
-- A full session freshness check (`/api/v1/auth/me`) is deferred to the first server
-  component data fetch on protected pages so that stale or revoked tokens are caught
-  within the first RSC render, not at the edge.
-
-**Consequences:** Session revocation is detectable within one page navigation (not
-necessarily at the CDN edge). Acceptable per REQ-SEC-003 which requires server-side
-revocation, not edge-level revocation.
-
----
-
-### DSN-002 — API client generation from OpenAPI spec
-
-**Relates to:** ADR-003, ADR-007 | **Architecture ref:** §2 COMP-003, COMP-006
-**Status:** Accepted | **Date:** 2024-01-20
-
-**Context:** The frontend must consume typed API responses without hand-duplicating backend
-DTOs (a primary source of drift in past projects).
-
-**Decision:**
-- The backend Express service emits an OpenAPI 3.1 spec at `GET /api/v1/openapi.json` in
-  non-production environments and as a static artifact during CI build.
-- The frontend workspace runs `openapi-typescript` (via `npm run generate:types`) to
-  produce `frontend/src/lib/api-types.gen.ts` from the spec.
-- All frontend API calls use a thin `fetcher` wrapper typed against the generated types;
-  no manual `interface` declarations for server-originated shapes.
-- The CI pipeline fails if the generated file is stale (diff check on the generated file
-  after regeneration).
-
-**Consequences:** Breaking API changes are surfaced as TypeScript errors in the frontend
-before merge. The generation step adds ~5 s to CI. The OpenAPI endpoint must be kept
-accurate; ownership is the backend team's responsibility.
-
----
-
-### DSN-003 — Prisma connection pooling in ECS
-
-**Relates to:** ADR-004, ADR-006, ADR-008 | **Architecture ref:** §2 COMP-006, COMP-008
-**Status:** Accepted | **Date:** 2024-01-21
-
-**Context:** Aurora Serverless v2 has a per-instance connection limit. ECS Fargate can run
-many concurrent tasks; naive one-connection-per-task Prisma usage could exhaust the
-Aurora connection pool under scale-out.
-
-**Decision:**
-- Deploy **PgBouncer** as a sidecar container on the backend ECS task definition in
-  `transaction` pooling mode.
-- Prisma connects to `localhost:6432` (PgBouncer); PgBouncer maintains a fixed pool
-  to Aurora (configurable `pool_size`, default 10 per task).
-- `DATABASE_URL` in the ECS task points to the PgBouncer sidecar; no application-level
-  change is required.
-- For local development, direct connection to Dockerised PostgreSQL is used; PgBouncer
-  is not required locally.
-
-**Consequences:** Connection usage is bounded per task. PgBouncer adds a sidecar image
-to maintain and a small latency overhead (~0.1 ms per transaction). Prisma interactive
-transactions (`$transaction`) must use the `interactiveTransactions` flag — supported
-in PgBouncer `session` mode; we use a `session`-mode fallback for transactions.
-
----
-
-### DSN-004 — CloudFront cache-control strategy
-
-**Relates to:** ADR-001, ADR-008 | **Architecture ref:** §2 COMP-002, COMP-005
-**Status:** Accepted | **Date:** 2024-01-21
-
-**Context:** CloudFront sits in front of both the Next.js frontend and the S3 static
-asset bucket. Caching must be tuned to serve static assets aggressively while ensuring
-authenticated page content is never served stale or to wrong users.
-
-**Decision:**
-
-| Path pattern | Cache behaviour | TTL |
-|---|---|---|
-| `/_next/static/*` | Cache at edge (immutable — content-hashed filenames) | 365 days |
-| `/favicon.ico`, `/robots.txt`, `/sitemap.xml` | Cache at edge | 1 day |
-| `/_next/image*` | Cache at edge (image optimisation) | 60 s (Next.js default) |
-| `/api/*` | Pass-through — never cached | 0 |
-| All other routes (SSR pages) | Pass-through — never cached at CloudFront; authenticated content must not be edge-cached | 0 |
-
-- CloudFront origin request policy forwards `Cookie` and `Authorization` headers for
-  non-static paths so the backend receives auth context.
-- `Cache-Control: no-store` is set on all API and SSR responses by the application.
-
-**Consequences:** Static assets benefit from full CDN caching. Dynamic pages always hit
-the Next.js origin. `/_next/static/*` assets use hashed names so 365-day TTL is safe
-(stale assets are unreachable after deploy).
-
----
-
-### DSN-005 — Structured logging format
-
-**Relates to:** ADR-010 | **Architecture ref:** §2 COMP-009
-**Status:** Accepted | **Date:** 2024-01-22
-
-**Context:** CloudWatch Logs Insights and X-Ray require consistent log structure to enable
-filtering, alerting, and trace correlation. Both the frontend (Next.js) and backend
-(Express) services must emit logs in compatible formats.
-
-**Decision:**
-- Both services log in **JSON (newline-delimited)** to `stdout`.
-- Required fields on every log line:
-
-  ```jsonc
-  {
-    "level": "info",          // debug | info | warn | error
-    "ts": "2024-01-22T10:00:00.000Z",
-    "service": "frontend",    // or "backend"
-    "traceId": "abc123",      // X-Ray trace ID (propagated via header)
-    "msg": "human-readable message",
-    "...context": {}          // optional domain-specific fields
-  }
-  ```
-
-- **Forbidden fields:** `password`, `sessionId`, `cookie`, `authorization`, `token`,
-  `secret`, `creditCard`, `ssn` — any field whose name or value may contain a credential
-  or PII. A lint-time ESLint rule (`no-restricted-syntax`) enforces this in-repo.
-- The backend uses `pino` for structured logging; the frontend uses a thin wrapper around
-  `console` that emits JSON in production and human-readable output in development.
-
-**Consequences:** Logs are queryable in CloudWatch Logs Insights. No secrets or PII in
-log output (enforced by both lint rule and pino serialiser `redact` config). Trace IDs
-enable request correlation across the frontend and backend services.
-
----
-
-### DSN-006 — Error response envelope
-
-**Relates to:** ADR-003 | **Architecture ref:** §2 COMP-006
-**Status:** Accepted | **Date:** 2024-01-22
-
-**Context:** The frontend and any future API consumers need a predictable error shape.
-Ad-hoc error responses (plain strings, varying JSON structures) cause brittle error-handling
-code.
-
-**Decision:**
-All API error responses use a consistent envelope:
-
-```jsonc
-{
-  "error": {
-    "code": "VALIDATION_ERROR",    // machine-readable, ALL_CAPS_SNAKE
-    "message": "Email is invalid", // human-readable, suitable for display
-    "details": [                   // optional — present for validation errors
-      { "field": "email", "message": "Must be a valid email address" }
-    ],
-    "requestId": "req_abc123"      // correlates to CloudWatch log trace
-  }
-}
-```
-
-- HTTP status codes are canonical: `400` validation, `401` unauthenticated, `403`
-  forbidden, `404` not found, `409` conflict, `422` unprocessable, `500` server error.
-- The `code` enum is defined in the OpenAPI spec and generated into the frontend types.
-- `500` responses **never** include stack traces or internal error messages — only a
-  generic `"INTERNAL_SERVER_ERROR"` code and the `requestId` for log correlation.
-- The Express global error handler (`middleware/errorHandler.ts`) owns this contract.
-
-**Consequences:** Frontend error-handling code is uniform. `requestId` enables support
-staff to correlate user-reported errors to CloudWatch logs without exposing internals.
-
----
-
-### DSN-007 — Database migration safety in ECS rolling deploy
-
-**Relates to:** ADR-004, ADR-006, ADR-008 | **Architecture ref:** §2 COMP-006, COMP-008
-**Status:** Accepted | **Date:** 2024-01-23
-
-**Context:** ECS rolling deploys run new task versions alongside old ones during the
-transition window. Prisma migrations that drop or rename columns will break old task
-versions reading the old schema simultaneously.
-
-**Decision:**
-- Migrations must be **backward-compatible** for at least one full deploy cycle. The
-  workflow is: (1) add new column as nullable, (2) deploy application code that writes
-  both old and new columns, (3) run data migration, (4) deploy code that uses only the
-  new column, (5) remove old column in a follow-up migration.
-- Migrations are applied by a one-shot **ECS run-task** (`migrate-runner`) job that
-  executes `prisma migrate deploy` against the production database before the main rolling
-  deploy begins. The deploy job depends on this task completing successfully.
-- `prisma migrate deploy` (not `migrate dev`) is used in production — never interactive.
-- Migration run-task logs are captured in CloudWatch and the CI pipeline fails if the
-  run-task exits non-zero.
-
-**Consequences:** Adds a pre-deploy step to the pipeline (~30 s). Zero-downtime deploys
-are safe for schema changes as long as the backward-compatibility convention is followed.
-Violating the convention is a human process gap, not a technical enforcement — a
-pre-commit hook that checks for `DROP COLUMN` / `RENAME COLUMN` in new migration files
-is the primary guard.
-
----
-
-### DSN-008 — Multi-tenant row isolation strategy
-
-**Relates to:** ADR-004, ADR-006 | **Architecture ref:** §2 COMP-006, COMP-008
-**Status:** Accepted | **Date:** 2024-01-23
-
-**Context:** The application is multi-tenant. Every resource (projects, records, files)
-belongs to a tenant. A data leak between tenants would be a critical security incident.
-
-**Decision:**
-- Every resource table carries a `tenantId` column (UUID, non-nullable, FK to `tenants`
-  table, indexed).
-- All Prisma queries in service-layer functions **must** include `where: { tenantId }` as
-  a mandatory filter. A custom ESLint rule (`enforce-tenant-filter`) checks all Prisma
-  `findMany`, `findFirst`, `update`, `delete`, and `upsert` calls for the presence of a
-  `tenantId` filter on tables annotated with `@tenant`.
-- The `tenantId` is extracted from the validated session (set by the auth middleware) —
-  never from the request body or query parameters.
-- Integration tests include explicit cross-tenant access attempt scenarios that must
-  return `404` (not `403`, to avoid tenant enumeration).
-
-**Consequences:** Tenant isolation is structurally enforced at the ORM layer and verified
-by linting and tests. The lint rule will generate false positives on admin-only queries
-that legitimately span tenants; those call sites are annotated with an inline eslint
-disable comment and require a code-review sign-off from the security owner.
-
----
-
-### DSN-009 — Image upload and S3 presigned URL flow
-
-**Relates to:** ADR-003, ADR-005 | **Architecture ref:** §2 COMP-003, COMP-005, COMP-006
-**Status:** Accepted | **Date:** 2024-01-24
-
-**Context:** Users can upload files (profile images, document attachments). Files must not
-pass through the Express API or Next.js service (memory/bandwidth cost); they must be
-stored in S3 privately and served via CloudFront with access control.
-
-**Decision:**
-1. The frontend requests a presigned PUT URL from the backend: `POST /api/v1/uploads/presign`.
-2. The backend validates the request (file type allow-list: `image/jpeg`, `image/png`,
-   `image/webp`, `application/pdf`; max size: 10 MB enforced via `Content-Length-Range` in
-   the presigned policy), generates a presigned S3 PUT URL valid for 5 minutes, and returns
-   it with the final object key.
-3. The frontend uploads directly from the browser to S3 using the presigned URL — the
-   file never touches the application servers.
-4. After upload completes, the frontend calls `POST /api/v1/uploads/confirm` with the
-   object key; the backend verifies the object exists in S3 (via S3 `HeadObject`), records
-   the reference in the database, and returns the CloudFront-served URL.
-5. S3 objects are **private** (no public read ACL). CloudFront uses Origin Access Control
-   (OAC). Signed CloudFront URLs are issued by the backend for time-limited access to
-   private documents; public assets (profile images) use unsigned CloudFront URLs.
-
-**Consequences:** Large file uploads do not saturate Express or Next.js memory. The
-5-minute presigned URL window limits exposure if a URL is leaked. File-type validation on
-the backend prevents polyglot/MIME-sniffing attacks (enforced by the `Content-Type`
-condition on the S3 bucket policy in addition to the presigned policy). Direct S3 upload
-means the backend never holds file bytes in memory.
-
----
-
-## Decision Status Records (DEC-001 – DEC-006)
-
-> The DEC table provides a rapid audit view of the current resolution status for all
-> in-flight and recently resolved cross-cutting decisions. It cross-references the ADR or
-> DSN where the full rationale lives.
->
-> **Status values:**
-> - `Accepted` — decision is final and implemented
-> - `In Review` — decision is actively being debated; a PR or RFC is open
-> - `Deferred` — decision is acknowledged but intentionally postponed with a stated
->   trigger/deadline
-> - `Superseded` — replaced by a later decision; see the superseding reference
-> - `Revoked` — reversed; no replacement; rationale recorded
-
----
-
-| ID | Title | Status | Owner | Linked ADR/DSN | Last updated | Notes |
-|----|-------|--------|-------|----------------|--------------|-------|
-| [DEC-001](#dec-001) | Adopt `openapi-typescript` for frontend type generation | Accepted | Frontend lead | DSN-002, ADR-003 | 2024-01-20 | Replaces the earlier proposal to use a shared `types/` package |
-| [DEC-002](#dec-002) | Use PgBouncer sidecar for connection pooling (not RDS Proxy) | Accepted | Backend lead | DSN-003, ADR-004 | 2024-01-21 | RDS Proxy evaluated and deferred — see DEC-002 notes |
-| [DEC-003](#dec-003) | Defer Turborepo adoption to a future phase | Deferred | Engineering lead | ADR-007 | 2024-01-14 | Trigger: team grows beyond 5 engineers or build times exceed 5 min |
-| [DEC-004](#dec-004) | Enforce tenant isolation via custom ESLint rule (not row-level security) | Accepted | Security owner | DSN-008, ADR-006 | 2024-01-23 | PostgreSQL RLS evaluated — see DEC-004 notes |
-| [DEC-005](#dec-005) | Use CloudFront signed URLs for private document access (not S3 presigned GET) | Accepted | Backend lead | DSN-009, ADR-005 | 2024-01-24 | Provides longer TTL flexibility without re-issuing S3 credentials |
-| [DEC-006](#dec-006) | Backward-compatible migration convention (no tooling enforcement yet) | In Review | Backend lead | DSN-007, ADR-006 | 2024-01-23 | Pre-commit hook for `DROP COLUMN`/`RENAME COLUMN` detection is planned — tracking in issue #42 |
-
----
-
-### DEC-001
-
-**Title:** Adopt `openapi-typescript` for frontend type generation
-**Status:** Accepted
-**Owner:** Frontend lead
-**Date:** 2024-01-20
-**Linked refs:** DSN-002, ADR-003
-
-**Summary:** The earlier proposal to maintain a shared `packages/types` workspace was
-rejected because it couples the frontend and backend build systems (violates ADR-007) and
-requires a manual publish step. `openapi-typescript` generates types from the backend's
-OpenAPI spec at build time, keeping the frontend contract in sync without a shared package.
-
-**Acceptance criteria met:**
-- [x] Generated types file (`frontend/src/lib/api-types.gen.ts`) is committed to the repo
-  and updated in CI.
-- [x] Frontend uses no manually-authored interfaces for server-originated shapes.
-- [x] CI diff-check fails the build if the generated file is out of date.
-
----
-
-### DEC-002
-
-**Title:** Use PgBouncer sidecar for connection pooling (not RDS Proxy)
-**Status:** Accepted
-**Owner:** Backend lead
-**Date:** 2024-01-21
-**Linked refs:** DSN-003, ADR-004
-
-**Summary:** AWS RDS Proxy was evaluated as an alternative to a PgBouncer sidecar. RDS
-Proxy supports Aurora PostgreSQL and handles connection pooling at the AWS layer. It was
-deferred for the following reasons:
-
-- RDS Proxy requires IAM authentication or Secrets Manager credentials; the current Prisma
-  setup uses a connection string — switching would require schema changes to the task
-  definition and Secrets Manager.
-- RDS Proxy costs approximately $0.015/vCPU-hour per database (in addition to the Aurora
-  cost), which exceeds the PgBouncer sidecar cost at current scale.
-- PgBouncer is well-understood by the team and the sidecar pattern is already established
-  for other concerns.
-
-RDS Proxy adoption is deferred to a future phase if connection pooling becomes a
-bottleneck or the operational burden of managing the PgBouncer image becomes significant.
-
----
-
-### DEC-003
-
-**Title:** Defer Turborepo adoption
-**Status:** Deferred
-**Owner:** Engineering lead
-**Date:** 2024-01-14
-**Linked refs:** ADR-007
-
-**Summary:** Turborepo or Nx would provide incremental build caching and parallel task
-execution across workspaces. At current project scale (two workspaces, CI runs under
-4 minutes), the tooling overhead is not justified.
-
-**Trigger for revisit:** Team size exceeds 5 engineers, or CI wall-clock time (lint +
-type-check + test + build across all workspaces) exceeds 5 minutes on a standard GitHub
-Actions runner.
-
-**Owner must revisit by:** Q3 2024
-
----
-
-### DEC-004
-
-**Title:** Enforce tenant isolation via custom ESLint rule (not PostgreSQL row-level security)
-**Status:** Accepted
-**Owner:** Security owner
-**Date:** 2024-01-23
-**Linked refs:** DSN-008, ADR-006
-
-**Summary:** PostgreSQL row-level security (RLS) was evaluated as an alternative enforcement
-mechanism for tenant isolation. RLS was not adopted for the following reasons:
-
-- Prisma does not natively support setting a session-level PostgreSQL parameter (required
-  for RLS policy variables) per query; workarounds involve raw SQL execution that breaks
-  the type-safety benefits of ADR-006.
-- RLS errors surface as database-level permission errors that are harder to translate into
-  appropriate API error responses (403 vs. 404 — see DSN-008 on tenant enumeration).
-- The custom ESLint rule (`enforce-tenant-filter`) catches missing `tenantId` filters at
-  development time, not runtime — earlier feedback is preferable.
-
-The ESLint rule enforcement is documented in DSN-008. The security owner reviews all
-`eslint-disable` annotations on Prisma calls quarterly.
-
----
-
-### DEC-005
-
-**Title:** Use CloudFront signed URLs for private document access
-**Status:** Accepted
-**Owner:** Backend lead
-**Date:** 2024-01-24
-**Linked refs:** DSN-009, ADR-005
-
-**Summary:** S3 presigned GET URLs were initially considered for serving private documents.
-CloudFront signed URLs were chosen instead because:
-
-- CloudFront signed URLs can be issued with longer TTLs (hours, not minutes) without
-  re-exposing S3 credentials — relevant for document downloads where the user may need
-  to resume a download.
-- CloudFront signed URLs work with the existing OAC-only S3 bucket policy; S3 presigned
-  GET URLs would require relaxing the OAC-only restriction.
-- Geo-restriction, WAF, and access logging are applied at the CloudFront layer uniformly;
-  S3 presigned URLs bypass CloudFront for those objects.
-
-CloudFront key pairs are managed via CloudFront Key Groups; the private key is stored in
-AWS Secrets Manager and injected into the backend ECS task at startup.
-
----
-
-### DEC-006
-
-**Title:** Backward-compatible migration convention (no tooling enforcement yet)
-**Status:** In Review
-**Owner:** Backend lead
-**Date:** 2024-01-23
-**Linked refs:** DSN-007, ADR-006
-
-**Summary:** DSN-007 documents the required convention for backward-compatible migrations.
-A pre-commit hook that detects `DROP COLUMN` and `RENAME COLUMN` statements in new
-migration files has been designed but not yet implemented. Until the hook ships, the
-convention is enforced by code review only.
-
-**Open questions:**
-- Should the hook also detect `NOT NULL` additions without a default (a common source of
-  lock-table incidents)? *Proposed answer: yes — to be confirmed with the backend team.*
-- Should violations block the commit (hard) or warn only (soft)? *Proposed: hard block
-  with a `--no-verify` escape hatch.*
-
-**Tracking issue:** [#42](../../issues/42) — *Implement migration safety pre-commit hook*
-
-**Expected resolution:** End of current sprint (2024-02-09)
-
----
-
-## Appendix: Requirements Summary
-
-The table below cross-references all requirement IDs cited in the ADRs above.
-
-| ID | Statement |
-|----|-----------|
-| REQ-FE-001 | Authenticated pages must be server-rendered — no unauthenticated flash |
-| REQ-FE-002 | Public pages must be indexable (SEO) |
-| REQ-FE-003 | Core Web Vitals must pass in production |
-| REQ-FE-004 | Auth session must not be readable by browser JavaScript |
-| REQ-SEC-001 | Session tokens must not be in `localStorage`; must use HTTP-only cookies |
-| REQ-SEC-002 | CSRF risk must be mitigated |
-| REQ-SEC-003 | Session revocation must be immediate (server-side) |
-| REQ-SEC-004 | No secret in Docker image, CI log, or committed file |
-| REQ-SEC-005 | Secrets must be rotatable without redeploying code |
-| REQ-SEC-006 | Secret access must be audited and least-privilege |
-| REQ-SEC-007 | No long-lived AWS IAM keys for CI/CD |
-| REQ-API-001 | API must scale independently from the frontend |
-| REQ-API-002 | API must be consumable by non-frontend clients (mobile, third-party) |
-| REQ-API-003 | Team has Express expertise and reusable middleware |
-| REQ-DB-001 | ACID transactions required |
-| REQ-DB-002 | Relational schema with FK constraints and joins |
-| REQ-DB-003 | Non-production databases must not incur idle cost |
-| REQ-DB-004 | Database must have no public endpoint |
-| REQ-DB-005 | All queries must be parameterised |
-| REQ-BE-001 | Query result types must be inferred from schema |
-| REQ-BE-002 | Migration workflow must be trackable in Git and runnable in CI |
-| REQ-INFRA-001 | All infrastructure must be on AWS |
-| REQ-INFRA-002 | Infrastructure changes must be code-reviewed and version-controlled |
-| REQ-INFRA-003 | IaC must use a language the team already knows |
-| REQ-INFRA-004 | IaC must produce repeatable environment bootstrapping |
-| REQ-INFRA-005 | Team must not manage container orchestration infrastructure |
-| REQ-INFRA-006 | Rolling zero-downtime deploys must be supported |
-| REQ-SCALE-001 | Frontend and backend must be independently horizontally scalable |
-| REQ-DX-001 | A single PR must support atomic frontend + backend changes |
-| REQ-DX-002 | Frontend and backend must be independently buildable and deployable |
-| REQ-DX-003 | Shared types must stay in sync without a separate publish step |
-| REQ-CI-001 | Every PR must run lint, type-check, tests, and build check |
-| REQ-CI-002 | Merge to `main` must auto-deploy to staging |
-| REQ-CI-003 | Production deploy triggered by version tag; no manual credential rotation |
+## Verification Evidence Map
+
+Cross-reference between VER IDs (design §verification) and the tasks that satisfy them:
+
+| VER ID | What It Verifies | Satisfying Task(s) |
+|--------|------------------|--------------------|
+| VER-001 | Registration + login + verification flows | TASK-015, TASK-016, TASK-017 |
+| VER-002 | Content CRUD, lock/hide, moderation, posts, KB | TASK-032–037, TASK-039–047 |
+| VER-003 | Search query correctness + injection safety | TASK-050, TASK-052 |
+| VER-004 | Authorization — all roles, negative tests | TASK-022, TASK-025, TASK-027–031, TASK-035, TASK-037 |
+| VER-005–008 | Session create/read/expire/invalidate + cookie attributes | TASK-013, TASK-014, TASK-021 |
+| VER-009 | Search empty-state + no-results handling | TASK-050 |
+| VER-010 | Output encoding on free-text fields | TASK-025, TASK-032, TASK-039, TASK-044 |
+| VER-012 | Enumeration safety (registration 409, reset identical response) | TASK-015, TASK-020 |
+| VER-013 | Security headers on all responses | TASK-008 (CI gate) |
+| VER-014 | CSRF token rejection on state-changing endpoints | TASK-059 |
+| VER-015 | CI pipeline blocks on intentional vulnerable dependency | TASK-003, TASK-012 |
+| VER-016 | MFA invalid/expired factor rejected + logged | TASK-019 |
+| VER-017 | Lockout/delay + owner alert at threshold | TASK-018 |
+| VER-018 | No hardcoded secrets + only approved AWS resources in IaC | TASK-012, TASK-064 |
+| VER-019 | Structured logs with correlationId; no PII/secrets in logs | TASK-005, TASK-063 |
+| VER-020 | Rate-limit 429 generic message on threshold breach | TASK-038, TASK-043, TASK-058 |
+| VER-021 | Pre-signed S3 URL private bucket, time-limited, no public ACL | TASK-026 |
+| VER-022 | No critical/serious axe-core violations | TASK-060 |
+| VER-023 | No layout breakage at defined breakpoints | TASK-061 |
+| VER-024 | JRN-001–009 happy-path + key alternates E2E | TASK-062 |
