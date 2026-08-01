@@ -1,0 +1,20 @@
+[
+  ".github/workflows/frontend-tests.yml",
+  "frontend/.env.example",
+  "frontend/.gitignore",
+  "frontend/package.json",
+  "frontend/playwright.config.ts",
+  "frontend/tests/a11y/MANUAL_AUDIT_CHECKLIST.md",
+  "frontend/tests/a11y/accessibility-responsive.spec.ts",
+  "frontend/tests/a11y/accessibility.spec.ts",
+  "frontend/tests/a11y/auth.setup.ts",
+  "frontend/tests/a11y/axe.fixture.ts",
+  "frontend/tests/a11y/screen-inventory.ts",
+  "frontend/tests/a11y/viewports.ts",
+  "frontend/tests/responsive/layout-assertions.ts",
+  "frontend/tests/responsive/responsive-matrix.ts",
+  "frontend/tests/responsive/responsive.spec.ts",
+  "frontend/tests/validation/VER-023-REPORT.md",
+  "frontend/tests/validation/smoke.spec.ts",
+  "frontend/tsconfig.json"
+]
