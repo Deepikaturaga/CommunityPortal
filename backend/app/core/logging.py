@@ -1,21 +1,30 @@
+"""Structured logging configuration (structlog)."""
 from __future__ import annotations
 
 import logging
-import sys
+from typing import Any
 
-from app.core.config import get_settings
+import structlog
 
 
-def configure_logging() -> None:
-    settings = get_settings()
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
-        )
+def configure_logging(level: str = "INFO") -> None:
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(
+            logging.getLevelName(level)
+        ),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
     )
-    logging.basicConfig(level=level, handlers=[handler], force=True)
-    # Suppress noisy third-party loggers in production
-    logging.getLogger("passlib").setLevel(logging.WARNING)
+
+
+def get_logger(name: str) -> Any:  # structlog BoundLogger is not precisely typed
+    return structlog.get_logger(name)

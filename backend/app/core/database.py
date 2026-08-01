@@ -1,8 +1,10 @@
-"""SQLAlchemy 2.0 async engine + session factory."""
+"""Async SQLAlchemy engine + session factory."""
+from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -13,36 +15,27 @@ from app.core.config import get_settings
 
 
 class Base(DeclarativeBase):
-    """Shared declarative base for all ORM models."""
+    pass
 
 
-def _make_engine():
+def _build_engine() -> AsyncEngine:
     settings = get_settings()
-    connect_args: dict = {}
-    if settings.database_url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
     return create_async_engine(
         settings.database_url,
-        echo=settings.debug,
-        connect_args=connect_args,
+        echo=False,
+        pool_pre_ping=True,
     )
 
 
-engine = _make_engine()
-
-AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
-    bind=engine,
+# Module-level singletons — replaced in tests via dependency override
+_engine: AsyncEngine = _build_engine()
+_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+    bind=_engine,
     expire_on_commit=False,
     class_=AsyncSession,
 )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency: yields an async DB session and closes it when done."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    async with _session_factory() as session:
+        yield session

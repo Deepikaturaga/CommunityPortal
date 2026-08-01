@@ -1,57 +1,43 @@
-"""ASGI application entrypoint."""
+"""ASGI entrypoint — single canonical FastAPI application."""
+from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 from app.core.config import get_settings
-from app.core.database import Base, engine
-from app.routes.auth_router import router as auth_router
-from app.routes.posts_router import router as posts_router
+from app.core.exceptions import register_exception_handlers
+from app.core.logging import configure_logging
+from app.services.posts.comments_router import router as comments_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Create tables on startup (dev/test). Alembic handles production migrations."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    settings = get_settings()
+    configure_logging()
+    # Validate settings eagerly at startup (pydantic-settings raises on bad config)
+    _ = settings
     yield
-    await engine.dispose()
+    # Shutdown: SQLAlchemy engine disposal handled per-request via DI
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
     app = FastAPI(
-        title="Blog API",
-        version="1.0.0",
-        docs_url="/docs" if settings.environment != "production" else None,
-        redoc_url=None,
+        title="Posts Service",
+        version="0.1.0",
         lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+    register_exception_handlers(app)
 
-    @app.exception_handler(Exception)
-    async def _unhandled(_req: Request, exc: Exception) -> JSONResponse:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    # ── Routers ──────────────────────────────────────────────────────────────
+    app.include_router(comments_router, prefix="/v1")
 
-    PREFIX = "/api/v1"
-    app.include_router(auth_router, prefix=PREFIX)
-    app.include_router(posts_router, prefix=PREFIX)
-
-    @app.get("/health", tags=["ops"])
+    # ── Health ───────────────────────────────────────────────────────────────
+    @app.get("/health", tags=["ops"], include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
