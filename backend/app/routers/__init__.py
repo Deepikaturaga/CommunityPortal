@@ -1,3 +1,4 @@
-```
+from app.routers.auth_router import router as auth_router
+from app.routers.content_router import router as content_router
 
-### `backend/app/routers/health.py`
+__all__ = ["auth_router", "content_router"]

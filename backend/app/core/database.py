@@ -1,9 +1,10 @@
+"""Async SQLAlchemy 2.0 engine + session factory."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -14,52 +15,35 @@ from app.core.config import get_settings
 
 
 class Base(DeclarativeBase):
-    pass
+    """Canonical declarative base for all ORM models."""
 
 
-_engine: AsyncEngine | None = None
-_session_factory: async_sessionmaker[AsyncSession] | None = None
+def _build_engine() -> "create_async_engine":  # type: ignore[return]
+    settings = get_settings()
+    return create_async_engine(
+        settings.database_url,
+        echo=settings.app_env == "development",
+        pool_pre_ping=True,
+    )
 
 
-def _get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
-        settings = get_settings()
-        _engine = create_async_engine(
-            settings.database_url,
-            echo=settings.app_env == "development",
-            pool_pre_ping=True,
-        )
-    return _engine
+_engine = _build_engine()
+
+AsyncSessionLocal = async_sessionmaker(
+    _engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
 
 
-def _get_session_factory() -> async_sessionmaker[AsyncSession]:
-    global _session_factory
-    if _session_factory is None:
-        _session_factory = async_sessionmaker(
-            bind=_get_engine(),
-            expire_on_commit=False,
-            autoflush=False,
-        )
-    return _session_factory
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency: yields a scoped AsyncSession."""
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
-def build_engine(url: str) -> AsyncEngine:
-    """Build a named engine for a given URL (used in tests)."""
-    return create_async_engine(url, echo=False, pool_pre_ping=True)
-
-
-def build_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
-
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency: yields an async DB session."""
-    factory = _get_session_factory()
-    async with factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+async def close_engine() -> None:
+    """Called on application shutdown."""
+    await _engine.dispose()

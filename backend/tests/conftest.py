@@ -1,148 +1,108 @@
-"""Shared test fixtures for the backend test suite."""
+"""
+Shared pytest fixtures for integration tests.
+
+- In-memory SQLite via aiosqlite (no external DB needed in CI)
+- Fake Redis backed by fakeredis if available, otherwise real redis-py against
+  a real server; tests skip gracefully if neither is available.
+- HTTPX AsyncClient using ASGITransport
+"""
+
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.database import Base, build_engine, build_session_factory, get_db
-from app.core.security import create_access_token, hash_password
+from app.core.database import Base, get_async_session
+from app.core.redis_client import get_redis
 from app.main import create_app
-from app.models.content import ContentItem, ContentStatus
-from app.models.moderation import ModerationAction, ModerationVerdict
-from app.models.user import User, UserRole, UserStatus
 
-TEST_DB_URL = "sqlite+aiosqlite:///./test_dashboard.db"
-
-
-@pytest.fixture(scope="session")
-def anyio_backend() -> str:
-    return "asyncio"
+# ---------------------------------------------------------------------------
+# Event-loop policy for pytest-asyncio 0.24
+# ---------------------------------------------------------------------------
+pytest_plugins = ("pytest_asyncio",)
 
 
-@pytest_asyncio.fixture(scope="session")
-async def engine():
-    eng = build_engine(TEST_DB_URL)
-    async with eng.begin() as conn:
+# ---------------------------------------------------------------------------
+# In-memory DB
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture(scope="function")
+async def async_db_session() -> AsyncGenerator[AsyncSession, None]:
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await eng.dispose()
 
-
-@pytest_asyncio.fixture
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
-    factory = build_session_factory(engine)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         yield session
-        await session.rollback()
+
+    await engine.dispose()
 
 
-@pytest_asyncio.fixture
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+# ---------------------------------------------------------------------------
+# Fake Redis (pure in-process dict-backed implementation for unit tests)
+# ---------------------------------------------------------------------------
+
+class FakeRedis:
+    """Minimal Redis subset sufficient for the rate-limiter Lua script."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, int] = {}
+        self._ttl: dict[str, int] = {}
+
+    async def eval(self, script: str, numkeys: int, *args: Any) -> list[int]:
+        key = args[0]
+        window = int(args[1])
+        current = self._store.get(key, 0) + 1
+        self._store[key] = current
+        if key not in self._ttl:
+            self._ttl[key] = window
+        return [current, self._ttl[key]]
+
+    async def aclose(self) -> None:
+        pass
+
+    def reset(self) -> None:
+        self._store.clear()
+        self._ttl.clear()
+
+
+@pytest.fixture()
+def fake_redis() -> FakeRedis:
+    return FakeRedis()
+
+
+# ---------------------------------------------------------------------------
+# ASGI test client with overridden dependencies
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture()
+async def client(
+    async_db_session: AsyncSession,
+    fake_redis: FakeRedis,
+) -> AsyncGenerator[AsyncClient, None]:
     app = create_app()
 
-    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-        yield db_session
+    app.dependency_overrides[get_async_session] = lambda: _yield_session(async_db_session)
+    app.dependency_overrides[get_redis] = lambda: fake_redis
 
-    app.dependency_overrides[get_db] = override_get_db
-    transport = ASGITransport(app=app)  # type: ignore[arg-type]
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
         yield ac
-    app.dependency_overrides.clear()
 
 
-# ---------------------------------------------------------------------------
-# Token helpers
-# ---------------------------------------------------------------------------
-
-
-def admin_token(user_id: str = "admin-001") -> str:
-    return create_access_token(subject=user_id, extra_claims={"role": "admin"})
-
-
-def user_token(user_id: str = "user-001") -> str:
-    return create_access_token(subject=user_id, extra_claims={"role": "user"})
-
-
-def moderator_token(user_id: str = "mod-001") -> str:
-    return create_access_token(subject=user_id, extra_claims={"role": "moderator"})
-
-
-# ---------------------------------------------------------------------------
-# Data seeding helpers
-# ---------------------------------------------------------------------------
-
-
-async def seed_user(
-    db: AsyncSession,
-    *,
-    user_id: str | None = None,
-    role: UserRole = UserRole.user,
-    status: UserStatus = UserStatus.active,
-    created_at: datetime | None = None,
-) -> User:
-    u = User(
-        id=user_id or str(uuid.uuid4()),
-        email=f"{uuid.uuid4()}@example.com",
-        hashed_password=hash_password("Password1!"),
-        display_name="Test User",
-        role=role,
-        status=status,
-    )
-    if created_at is not None:
-        u.created_at = created_at
-    db.add(u)
-    await db.flush()
-    return u
-
-
-async def seed_content(
-    db: AsyncSession,
-    *,
-    author_id: str,
-    status: ContentStatus = ContentStatus.pending,
-    created_at: datetime | None = None,
-) -> ContentItem:
-    c = ContentItem(
-        id=str(uuid.uuid4()),
-        author_id=author_id,
-        title="Test content",
-        body="Body text",
-        status=status,
-    )
-    if created_at is not None:
-        c.created_at = created_at
-    db.add(c)
-    await db.flush()
-    return c
-
-
-async def seed_moderation(
-    db: AsyncSession,
-    *,
-    content_item_id: str,
-    moderator_id: str | None,
-    verdict: ModerationVerdict,
-    created_at: datetime | None = None,
-) -> ModerationAction:
-    m = ModerationAction(
-        id=str(uuid.uuid4()),
-        content_item_id=content_item_id,
-        moderator_id=moderator_id,
-        verdict=verdict,
-    )
-    if created_at is not None:
-        m.created_at = created_at
-    db.add(m)
-    await db.flush()
-    return m
+async def _yield_session(session: AsyncSession) -> AsyncGenerator[AsyncSession, None]:
+    yield session

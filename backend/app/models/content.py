@@ -1,56 +1,54 @@
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.models.account import Account
+
+    owner: Mapped[Account] = relationship(
+        "Account", back_populates="content_items", lazy="raise"
+    )
+"""SQLAlchemy ORM model for user-created content items."""
+
 from __future__ import annotations
 
-import enum
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-if TYPE_CHECKING:
-    from app.models.moderation import ModerationAction
 
-
-class ContentStatus(str, enum.Enum):
-    pending = "pending"
-    published = "published"
-    removed = "removed"
+class ContentStatus(str, PyEnum):
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
 
 
 class ContentItem(Base):
+    """Represents a piece of user-authored content."""
+
     __tablename__ = "content_items"
 
-    id: Mapped[str] = mapped_column(
+    id: Mapped[uuid.UUID] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    owner_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    author_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    title: Mapped[str] = mapped_column(String(500), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[ContentStatus] = mapped_column(
-        Enum(ContentStatus, name="content_status"),
-        nullable=False,
-        default=ContentStatus.pending,
-        index=True,
+        Enum(ContentStatus), nullable=False, default=ContentStatus.DRAFT
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
 
-    # relationships
-    moderation_actions: Mapped[list[ModerationAction]] = relationship(
-        "ModerationAction", back_populates="content_item", cascade="all, delete-orphan"
+    # Relationships
     )
-
-    def __repr__(self) -> str:
-        return f"<ContentItem id={self.id} status={self.status}>"

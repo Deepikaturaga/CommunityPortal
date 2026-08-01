@@ -1,9 +1,8 @@
+"""Application settings – validated at startup via pydantic-settings."""
+
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Annotated
-
-from pydantic import AnyUrl, Field, field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,35 +14,50 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Application
+    # ── App ───────────────────────────────────────────────────────────────────
     app_env: str = "development"
-    secret_key: str = Field(min_length=32)
+    secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///./dev.db"
+    # ── Database ──────────────────────────────────────────────────────────────
+    database_url: str
 
-    # Test database (optional override)
-    test_database_url: str = "sqlite+aiosqlite:///./test.db"
+    # ── Redis ─────────────────────────────────────────────────────────────────
+    redis_url: str = "redis://localhost:6379/0"
 
-    # CORS
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # ── Rate-limit thresholds (per-account, sliding-window) ───────────────────
+    ratelimit_register_max: int = 5
+    ratelimit_register_window_seconds: int = 3600
 
-    # Admin bootstrap
-    admin_bootstrap_email: str = "admin@example.com"
-    admin_bootstrap_password: str = Field(default="changeme", min_length=8)
+    ratelimit_login_max: int = 10
+    ratelimit_login_window_seconds: int = 900
+
+    ratelimit_content_create_max: int = 60
+    ratelimit_content_create_window_seconds: int = 3600
 
     @field_validator("secret_key")
     @classmethod
-    def secret_key_not_default(cls, v: str) -> str:
-        # Warn in production; allow in test/dev
+    def _secret_key_strength(cls, v: str) -> str:
+        if len(v) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters")
         return v
 
+    @model_validator(mode="after")
+    def _no_default_secret_in_prod(self) -> "Settings":
+        if self.app_env == "production" and "CHANGE_ME" in self.secret_key:
+            raise ValueError("SECRET_KEY must not be the default value in production")
+        return self
 
-@lru_cache
+
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    """Return a cached Settings instance (FastAPI dependency-safe)."""
+    return _settings
 
 
-SettingsDep = Annotated[Settings, None]
+# Module-level singleton; fail fast at import time if env is misconfigured.
+_settings = Settings(
+    secret_key="CHANGE_ME_IN_PRODUCTION_use_openssl_rand_hex_32_dev_only",
+    database_url="sqlite+aiosqlite:///./dev.db",
+)
