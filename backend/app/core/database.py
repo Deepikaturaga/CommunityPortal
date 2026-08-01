@@ -1,38 +1,22 @@
-"""Async SQLAlchemy engine + session factory (single canonical instance)."""
+from __future__ import annotations
+
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
+from app.core.config import settings
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-def _make_engine() -> object:  # returns AsyncEngine; typed loosely to avoid import cycle
-    settings = get_settings()
-    return create_async_engine(
-        settings.database_url,
-        echo=settings.environment == "development",
-        pool_pre_ping=True,
-    )
-
-
-_engine = _make_engine()
-_async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
-    bind=_engine,  # type: ignore[arg-type]
-    class_=AsyncSession,
-    expire_on_commit=False,
+engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
+AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
+    bind=engine, expire_on_commit=False, autoflush=False, autocommit=False
 )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency — yields one session per request."""
-    async with _async_session_factory() as session:
-        yield session
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

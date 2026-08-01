@@ -1,39 +1,31 @@
-"""User ORM model."""
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole), nullable=False, default=UserRole.user
+    )
+from __future__ import annotations
 
+import enum
 import uuid
-from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
-from app.core.enums import UserRole
+from app.models.base import Base
+
+
+class UserRole(str, enum.Enum):
+    user = "user"
+    moderator = "moderator"
+    admin = "admin"
 
 
 class User(Base):
     __tablename__ = "users"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        primary_key=True,
-        default=uuid.uuid4,
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
-    hashed_password: Mapped[str] = mapped_column(String(128), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
-    role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, name="userrole"), nullable=False, default=UserRole.READER
-    )
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(UTC),
-        onupdate=lambda: datetime.now(UTC),
-    )
-
-    posts: Mapped[list["Post"]] = relationship(  # noqa: F821
-        "Post", back_populates="author", lazy="selectin"
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    moderation_audit_records: Mapped[list] = relationship(
+        "ModerationAuditRecord", back_populates="moderator", lazy="raise"
     )

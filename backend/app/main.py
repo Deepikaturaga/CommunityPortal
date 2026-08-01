@@ -1,68 +1,76 @@
-"""
-Canonical ASGI application entrypoint.
+from __future__ import annotations
 
-One FastAPI instance, one lifespan, all routers registered here.
-"""
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 
-from app.core.config import get_settings
-from app.core.exceptions import http_exception_handler, validation_exception_handler
-from app.core.logging import configure_logging
+from app.core.config import settings
+from app.core.database import engine
+from app.models.base import Base
+import app.models.content  # noqa: F401  — register mapper
+import app.models.kb_article  # noqa: F401  — register mapper
+import app.models.moderation  # noqa: F401  — register mapper
+import app.models.user  # noqa: F401  — register mapper
+from app.services.kb.router import router as kb_router
+from app.services.kb.visibility import router as kb_visibility_router
 
-# Routers
-from app.auth.router import router as auth_router
-from app.kb.kb_router import router as kb_router
+# Optional routers implemented in sibling phases; safe to skip when absent.
+try:
+    from app.services.moderation.router import router as moderation_router  # type: ignore[import]
+
+    _has_moderation = True
+except ModuleNotFoundError:
+    _has_moderation = False
+
+try:
+    from app.services.posts.router import router as posts_router  # type: ignore[import]
+
+    _has_posts = True
+except ModuleNotFoundError:
+    _has_posts = False
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    settings = get_settings()
-    configure_logging(settings.log_level)
+async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+    if settings.ENVIRONMENT in ("development", "test"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
-    # Shutdown: engine disposal handled at process exit; add explicit cleanup here if needed.
+    await engine.dispose()
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+app = FastAPI(title="Moderation Service", version="0.1.0", lifespan=lifespan)
 
-    application = FastAPI(
-        title="KB API",
-        version="1.0.0",
-        docs_url="/api/docs" if settings.environment != "production" else None,
-        redoc_url="/api/redoc" if settings.environment != "production" else None,
-        openapi_url="/api/openapi.json" if settings.environment != "production" else None,
-        lifespan=lifespan,
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    import logging
+
+    logging.getLogger(__name__).exception(
+        "Unhandled error: %s %s", request.method, request.url
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"},
     )
 
-    # CORS
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.origins_list,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["Authorization", "Content-Type"],
+
+if _has_moderation:
+    app.include_router(
+        moderation_router,  # type: ignore[possibly-undefined]
+        prefix="/api/v1",
     )
-
-    # Global exception handlers (no internal detail leakage)
-    application.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
-    application.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
-
-    # Routers
-    api_prefix = "/api/v1"
-    application.include_router(auth_router, prefix=api_prefix)
-    application.include_router(kb_router, prefix=api_prefix)
-
-    @application.get("/health", tags=["ops"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    return application
+if _has_posts:
+    app.include_router(
+        posts_router,  # type: ignore[possibly-undefined]
+        prefix="/api/v1",
+    )
+app.include_router(kb_router, prefix="/api/v1")
+app.include_router(kb_visibility_router, prefix="/api/v1")
 
 
-app = create_app()
+@app.get("/health", tags=["ops"], include_in_schema=False)
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
