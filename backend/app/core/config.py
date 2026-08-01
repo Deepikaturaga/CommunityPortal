@@ -1,10 +1,8 @@
-"""Application settings — validated at startup via pydantic-settings."""
-
 from __future__ import annotations
 
-from typing import Annotated
+from functools import lru_cache
 
-from pydantic import AnyHttpUrl, EmailStr, Field, field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,50 +11,50 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
     )
 
-    # ── Application ──────────────────────────────────────────────────────────
-    app_env: str = "development"
-    secret_key: str = Field(min_length=32)
-    allowed_hosts: list[AnyHttpUrl] = []
+    # Database
+    database_url: str
 
-    # ── Database ─────────────────────────────────────────────────────────────
-    database_url: str  # asyncpg URL for the async engine
-    database_sync_url: str  # psycopg2 URL for Alembic
+    # Security — JWT
+    secret_key: str
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
 
-    # ── Email verification ────────────────────────────────────────────────────
-    email_verification_token_ttl: Annotated[int, Field(gt=0)] = 86400
-    email_skip_send: bool = True
-    smtp_host: str = "localhost"
-    smtp_port: Annotated[int, Field(gt=0, lt=65536)] = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from: EmailStr = "noreply@example.com"
+    # MFA
+    mfa_challenge_expire_seconds: int = 300
 
-    # ── AWS SES (production email provider) ───────────────────────────────────
-    # email_provider: "smtp" (default) | "ses"
-    email_provider: str = "smtp"
-    aws_region: str = "us-east-1"
-    ses_from_arn: str = ""  # optional; uses smtp_from identity when empty
+    # Lockout
+    max_login_attempts: int = 5
+    lockout_duration_seconds: int = 900
+    # Max per-attempt back-off delay before returning a 401 (caps the delay schedule)
+    lockout_delay_max_seconds: float = 5.0
 
-    # ── Security ──────────────────────────────────────────────────────────────
-    password_hash_rounds: Annotated[int, Field(ge=4, le=31)] = 12
-    password_min_length: Annotated[int, Field(ge=8)] = 12
+    # App
+    environment: str = "development"
+    log_level: str = "INFO"
 
-    @field_validator("database_url")
+    @field_validator("secret_key")
     @classmethod
-    def _must_be_asyncpg(cls, v: str) -> str:
-        if "asyncpg" not in v:
-            raise ValueError("database_url must use the asyncpg driver")
+    def _secret_key_not_default(cls, v: str) -> str:
+        if v.startswith("change-me"):
+            import os
+
+            if os.getenv("ENVIRONMENT", "development") == "production":
+                raise ValueError("SECRET_KEY must be changed from the default in production")
         return v
 
+    @model_validator(mode="after")
+    def _validate_lockout(self) -> Settings:
+        if self.max_login_attempts < 1:
+            raise ValueError("max_login_attempts must be >= 1")
+        if self.lockout_duration_seconds < 1:
+            raise ValueError("lockout_duration_seconds must be >= 1")
+        if self.lockout_delay_max_seconds < 0:
+            raise ValueError("lockout_delay_max_seconds must be >= 0")
+        return self
 
-_settings: Settings | None = None
 
-
+@lru_cache
 def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
-        _settings = Settings()  # type: ignore[call-arg]
-    return _settings
+    return Settings()  # type: ignore[call-arg]
