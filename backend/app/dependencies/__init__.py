@@ -1,1 +1,1 @@
-"""Dependencies package."""
+"""Dependencies sub-package."""

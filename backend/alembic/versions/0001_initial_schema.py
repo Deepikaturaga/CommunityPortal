@@ -1,91 +1,62 @@
-"""Initial schema: users + media_assets tables.
+"""Initial schema: users + posts tables.
 
-Revision ID: 0001_initial_schema
+Revision ID: 0001
 Revises: 
 Create Date: 2025-01-01 00:00:00.000000
 """
 
 from __future__ import annotations
 
-from typing import Sequence, Union
-
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
-revision: str = "0001_initial_schema"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision = "0001"
+down_revision = None
+branch_labels = None
+depends_on = None
 
 
 def upgrade() -> None:
-    # ── users ──────────────────────────────────────────────────────────────────
     op.create_table(
         "users",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("email", sa.String(length=254), nullable=False),
-        sa.Column("hashed_password", sa.String(length=255), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("email", sa.String(length=320), nullable=False),
+        sa.Column("hashed_password", sa.String(length=128), nullable=False),
+        sa.Column("display_name", sa.String(length=120), nullable=False),
         sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
+            "role",
+            sa.Enum("admin", "author", "reader", name="userrole"),
             nullable=False,
-            server_default=sa.text("now()"),
         ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
+        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_users_email", "users", ["email"], unique=True)
 
-    # ── assetstatus enum ───────────────────────────────────────────────────────
-    assetstatus = postgresql.ENUM(
-        "pending", "confirmed", "deleted", name="assetstatus", create_type=False
-    )
-    assetstatus.create(op.get_bind(), checkfirst=True)
-
-    # ── media_assets ───────────────────────────────────────────────────────────
     op.create_table(
-        "media_assets",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("owner_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("asset_type", sa.String(length=64), nullable=False, server_default="avatar"),
-        sa.Column("s3_key", sa.String(length=512), nullable=False),
-        sa.Column("content_type", sa.String(length=128), nullable=False),
-        sa.Column("declared_size_bytes", sa.Integer(), nullable=False),
+        "posts",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("title", sa.String(length=255), nullable=False),
+        sa.Column("slug", sa.String(length=255), nullable=False),
+        sa.Column("body", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("pending", "confirmed", "deleted", name="assetstatus"),
+            sa.Enum("draft", "published", "archived", name="poststatus"),
             nullable=False,
-            server_default="pending",
         ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="CASCADE"),
+        sa.Column("author_id", sa.Uuid(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["author_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("s3_key"),
     )
-    op.create_index("ix_media_assets_owner_id", "media_assets", ["owner_id"])
+    op.create_index("ix_posts_slug", "posts", ["slug"], unique=True)
+    op.create_index("ix_posts_status", "posts", ["status"], unique=False)
+    op.create_index("ix_posts_author_id", "posts", ["author_id"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_media_assets_owner_id", table_name="media_assets")
-    op.drop_table("media_assets")
-    sa.Enum(name="assetstatus").drop(op.get_bind(), checkfirst=True)
-    op.drop_index("ix_users_email", table_name="users")
+    op.drop_table("posts")
     op.drop_table("users")

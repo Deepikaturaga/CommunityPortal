@@ -1,24 +1,19 @@
 """Domain enumerations shared across the application."""
-from __future__ import annotations
 
 import enum
 
 
 class UserRole(str, enum.Enum):
-    """Roles assignable to a user account.
-
-    Hierarchy (highest → lowest):
-      ADMIN  > MODERATOR > CONTRIBUTOR > VIEWER
-    """
+    """Roles available to user accounts."""
 
     ADMIN = "admin"
-    MODERATOR = "moderator"
-    CONTRIBUTOR = "contributor"
-    VIEWER = "viewer"
+    AUTHOR = "author"
+    READER = "reader"
 
 
-# Roles that admins are permitted to grant/revoke via the role-management API.
-# ADMIN role self-assignment is explicitly excluded to prevent privilege escalation.
-ASSIGNABLE_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.MODERATOR, UserRole.CONTRIBUTOR, UserRole.VIEWER}
-)
+class PostStatus(str, enum.Enum):
+    """Publication lifecycle status for a post."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    ARCHIVED = "archived"
