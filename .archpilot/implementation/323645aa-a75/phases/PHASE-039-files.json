@@ -1,0 +1,6 @@
+[
+  "conftest.py",
+  "pytest.ini",
+  "tests/__init__.py",
+  "tests/notifications/stubs.py"
+]
