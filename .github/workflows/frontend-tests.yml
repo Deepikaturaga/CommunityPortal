@@ -1,0 +1,234 @@
+##############################################################################
+# .github/workflows/frontend-tests.yml
+#
+# CI pipeline for frontend Playwright test suites — VER-023
+#
+# Jobs:
+#   validate    — TypeScript type-check + infrastructure smoke tests
+#                 (no live app required; runs on every push/PR)
+#   e2e-a11y    — Axe-core accessibility scans (TASK-060 / VER-022)
+#   e2e-responsive — Responsive layout integrity (TASK-061 / NFR-019)
+#
+# Secrets required (Settings → Secrets → Actions):
+#   TEST_USER_EMAIL     — login email for the seeded test user
+#   TEST_USER_PASSWORD  — login password for the seeded test user
+#
+# Optional overrides (repository variables):
+#   BASE_URL            — override application URL (default: http://localhost:5173)
+##############################################################################
+
+name: Frontend Tests
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-tests.yml"
+  pull_request:
+    branches: ["main", "develop"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-tests.yml"
+
+defaults:
+  run:
+    working-directory: frontend
+
+env:
+  # Node version pinned to match local development toolchain.
+  NODE_VERSION: "20"
+  # Playwright version is read from package.json; browsers are cached separately.
+  PLAYWRIGHT_BROWSERS_PATH: "~/.cache/ms-playwright"
+
+##############################################################################
+# Job 1 — Validate (type-check + smoke tests)
+# Runs without a live application; gates all subsequent jobs.
+##############################################################################
+jobs:
+  validate:
+    name: "VER-023 · Type-check & smoke tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── TypeScript type-check ──────────────────────────────────────────────
+      - name: TypeScript — lint:types
+        run: npx tsc --noEmit
+
+      # ── Install Playwright Chromium only (smoke needs a browser runtime) ───
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers (Chromium)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium --with-deps
+
+      - name: Install Playwright system deps (cached hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # ── Smoke tests (VER-023) ──────────────────────────────────────────────
+      - name: Playwright — smoke project (VER-023)
+        run: npx playwright test --project=smoke
+        env:
+          CI: "true"
+          # BASE_URL intentionally omitted — smoke tests need no running app.
+
+      - name: Upload smoke test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-playwright-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+##############################################################################
+# Job 2 — End-to-end accessibility scans (VER-022)
+# Requires a running application; triggered only after validate passes.
+##############################################################################
+  e2e-a11y:
+    name: "VER-022 · Accessibility scans"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validate
+    # Only run when the app can be started (not on draft PRs by default).
+    if: github.event.pull_request.draft != true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache-a11y
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers (Chromium)
+        if: steps.playwright-cache-a11y.outputs.cache-hit != 'true'
+        run: npx playwright install chromium --with-deps
+
+      - name: Install Playwright system deps (cached hit)
+        if: steps.playwright-cache-a11y.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # ── Start the application ──────────────────────────────────────────────
+      # Adjust the `command` to match the project's dev/preview server.
+      # The server is started in the background; Playwright health-checks BASE_URL.
+      - name: Start application (background)
+        run: |
+          # TODO: replace with the real start command once the app is implemented.
+          # e.g.: npm run preview &
+          # For now the job will fail gracefully if BASE_URL is not reachable —
+          # tests are marked as pending until upstream phases land.
+          echo "Application start step — configure before enabling."
+        env:
+          BASE_URL: ${{ vars.BASE_URL || 'http://localhost:5173' }}
+
+      # ── Auth setup + a11y scans ────────────────────────────────────────────
+      - name: Playwright — a11y scans
+        run: npx playwright test --project=a11y-chromium
+        env:
+          CI: "true"
+          BASE_URL: ${{ vars.BASE_URL || 'http://localhost:5173' }}
+          TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+      - name: Upload a11y test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a11y-playwright-report
+          path: frontend/playwright-report/
+          retention-days: 30
+
+##############################################################################
+# Job 3 — Responsive layout tests (NFR-019)
+##############################################################################
+  e2e-responsive:
+    name: "NFR-019 · Responsive layout tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validate
+    if: github.event.pull_request.draft != true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache-responsive
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright browsers (all engines for responsive coverage)
+        if: steps.playwright-cache-responsive.outputs.cache-hit != 'true'
+        # Responsive tests use iPhone 12 and iPad device presets (WebKit/Chromium).
+        run: npx playwright install chromium webkit --with-deps
+
+      - name: Install Playwright system deps (cached hit)
+        if: steps.playwright-cache-responsive.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium webkit
+
+      - name: Start application (background)
+        run: |
+          echo "Application start step — configure before enabling."
+        env:
+          BASE_URL: ${{ vars.BASE_URL || 'http://localhost:5173' }}
+
+      - name: Playwright — responsive layout (mobile + tablet + desktop)
+        run: npx playwright test --project=responsive-mobile --project=responsive-tablet --project=responsive-desktop
+        env:
+          CI: "true"
+          BASE_URL: ${{ vars.BASE_URL || 'http://localhost:5173' }}
+          TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+      - name: Upload responsive test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsive-playwright-report
+          path: frontend/playwright-report/
+          retention-days: 30

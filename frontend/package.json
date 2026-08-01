@@ -1,35 +1,20 @@
 {
   "name": "frontend",
-  "version": "0.1.0",
   "private": true,
+  "version": "0.0.0",
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "type-check": "tsc --noEmit",
-    "test": "jest --passWithNoTests",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "test:dashboard": "jest --testPathPattern=tests/admin-dashboard --coverage"
-  },
-  "dependencies": {
-    "next": "14.2.3",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "test:a11y": "playwright test --project=a11y-chromium",
+    "test:responsive": "playwright test --project=responsive-mobile --project=responsive-tablet --project=responsive-desktop",
+    "test:a11y:report": "playwright show-report playwright-report",
+    "test:all": "playwright test",
+    "test:smoke": "playwright test --project=smoke",
+    "lint:types": "tsc --noEmit",
+    "validate": "tsc --noEmit && playwright test --project=smoke"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.4.2",
-    "@testing-library/react": "^15.0.7",
-    "@testing-library/user-event": "^14.5.2",
-    "@types/jest": "^29.5.12",
-    "@types/node": "^20.14.2",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "identity-obj-proxy": "^3.0.0",
-    "jest": "^29.7.0",
-    "jest-environment-jsdom": "^29.7.0",
-    "ts-node": "^10.9.2",
+    "@axe-core/playwright": "^4.9.1",
+    "@playwright/test": "^1.44.0",
     "typescript": "^5.4.5"
   }
 }

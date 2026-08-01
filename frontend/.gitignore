@@ -1,0 +1,5 @@
+# gitignore for Playwright test artifacts
+tests/a11y/.auth/
+playwright-report/
+test-results/
+*.zip
