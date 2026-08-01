@@ -1,54 +1,53 @@
 from __future__ import annotations
-
 import enum
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
-
-if TYPE_CHECKING:
-    from app.models.content import ContentItem
+from app.models.base import Base
 
 
-class ModerationVerdict(str, enum.Enum):
-    approved = "approved"
-    rejected = "rejected"
-    escalated = "escalated"
+class ModerationAction(str, enum.Enum):
+    lock = "lock"
+    hide = "hide"
+    delete = "delete"
 
 
-class ModerationAction(Base):
-    __tablename__ = "moderation_actions"
-
+class ModerationAuditRecord(Base):
+    __tablename__ = "moderation_audit_records"
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    content_item_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("content_items.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+    content_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("content.id", ondelete="CASCADE"), nullable=False, index=True
     )
     moderator_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=False, index=True
     )
-    verdict: Mapped[ModerationVerdict] = mapped_column(
-        Enum(ModerationVerdict, name="moderation_verdict"),
-        nullable=False,
-        index=True,
-    )
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[ModerationAction] = mapped_column(Enum(ModerationAction), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    previous_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    new_status: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    content: Mapped["Content"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "Content", back_populates="audit_records", lazy="raise"
+    )
+    moderator: Mapped["User"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "User", back_populates="moderation_audit_records", lazy="raise"
     )
 
-    # relationships
-    content_item: Mapped[ContentItem] = relationship(
-        "ContentItem", back_populates="moderation_actions"
-    )
 
-    def __repr__(self) -> str:
-        return f"<ModerationAction id={self.id} verdict={self.verdict}>"
+@event.listens_for(ModerationAuditRecord, "before_update")
+def _prevent_audit_update(mapper, connection, target):  # type: ignore[no-untyped-def]
+    raise RuntimeError("ModerationAuditRecord is immutable — UPDATE is forbidden (AC-014.4)")
+
+
+@event.listens_for(ModerationAuditRecord, "before_delete")
+def _prevent_audit_delete(mapper, connection, target):  # type: ignore[no-untyped-def]
+    raise RuntimeError("ModerationAuditRecord is immutable — DELETE is forbidden (AC-014.4)")
