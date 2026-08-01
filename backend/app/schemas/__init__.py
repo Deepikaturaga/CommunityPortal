@@ -1,1 +1,1 @@
-"""Schemas sub-package — Pydantic request/response models."""
+# backend/app/schemas/__init__.py

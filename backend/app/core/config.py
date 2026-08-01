@@ -1,8 +1,9 @@
+"""Application configuration via environment variables."""
 from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,50 +12,88 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
-    # Database
-    database_url: str
+    # ── Database ──────────────────────────────────────────────────────────────
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./dev.db",
+        description="Async SQLAlchemy database URL",
+    )
 
-    # Security — JWT
-    secret_key: str
-    algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    # ── JWT ───────────────────────────────────────────────────────────────────
+    jwt_secret: SecretStr = Field(
+        default="change-me-in-production-at-least-32-chars!",
+        description="HMAC secret for signing JWTs — minimum 32 chars",
+    )
+    jwt_algorithm: str = Field(default="HS256")
+    # Access token lifetime (minutes)
+    access_token_expire_minutes: int = Field(default=15)
+    # Refresh token lifetime (days)
+    refresh_token_expire_days: int = Field(default=7)
 
-    # MFA
-    mfa_challenge_expire_seconds: int = 300
+    # ── Cookie / Session ─────────────────────────────────────────────────────
+    cookie_name: str = Field(default="session")
+    cookie_secure: bool = Field(default=True, description="Set Secure flag on session cookie")
+    cookie_httponly: bool = Field(default=True, description="Set HttpOnly flag — no JS access")
+    cookie_samesite: str = Field(
+        default="lax", description="SameSite policy: strict | lax | none"
+    )
+    cookie_domain: str | None = Field(default=None)
+    session_secret: SecretStr = Field(
+        default="session-secret-change-me-32-chars!!",
+        description="HMAC secret for signing session cookies (itsdangerous)",
+    )
+    # Session absolute expiry (seconds)
+    session_max_age: int = Field(default=3600, description="Session max age in seconds")
 
-    # Lockout
-    max_login_attempts: int = 5
-    lockout_duration_seconds: int = 900
-    # Max per-attempt back-off delay before returning a 401 (caps the delay schedule)
-    lockout_delay_max_seconds: float = 5.0
+    # ── CSRF ─────────────────────────────────────────────────────────────────
+    csrf_header_name: str = Field(default="X-CSRF-Token")
+    csrf_cookie_name: str = Field(default="csrf_token")
+    csrf_token_expire_seconds: int = Field(default=3600)
 
-    # App
-    environment: str = "development"
-    log_level: str = "INFO"
+    # ── Account Lockout ──────────────────────────────────────────────────────
+    max_failed_login_attempts: int = Field(default=5)
+    lockout_duration_seconds: int = Field(default=900, description="15 minutes")
 
-    @field_validator("secret_key")
+    # ── TOTP / MFA ───────────────────────────────────────────────────────────
+    totp_issuer: str = Field(default="MyApp")
+    totp_digits: int = Field(default=6)
+    totp_interval: int = Field(default=30)
+    totp_valid_window: int = Field(
+        default=1, description="Number of intervals before/after current to accept"
+    )
+
+    # ── Application ──────────────────────────────────────────────────────────
+    app_name: str = Field(default="Identity API")
+    environment: str = Field(default="development")
+    debug: bool = Field(default=False)
+
+    @field_validator("jwt_secret", mode="before")
     @classmethod
-    def _secret_key_not_default(cls, v: str) -> str:
-        if v.startswith("change-me"):
-            import os
-
-            if os.getenv("ENVIRONMENT", "development") == "production":
-                raise ValueError("SECRET_KEY must be changed from the default in production")
+    def _secret_min_length(cls, v: str | SecretStr) -> str | SecretStr:
+        raw = v.get_secret_value() if isinstance(v, SecretStr) else v
+        if len(raw) < 32:
+            raise ValueError("jwt_secret must be at least 32 characters")
         return v
 
-    @model_validator(mode="after")
-    def _validate_lockout(self) -> Settings:
-        if self.max_login_attempts < 1:
-            raise ValueError("max_login_attempts must be >= 1")
-        if self.lockout_duration_seconds < 1:
-            raise ValueError("lockout_duration_seconds must be >= 1")
-        if self.lockout_delay_max_seconds < 0:
-            raise ValueError("lockout_delay_max_seconds must be >= 0")
-        return self
+    @field_validator("cookie_samesite")
+    @classmethod
+    def _samesite_valid(cls, v: str) -> str:
+        if v.lower() not in {"strict", "lax", "none"}:
+            raise ValueError("cookie_samesite must be strict, lax, or none")
+        return v.lower()
+
+    @property
+    def access_token_expire_seconds(self) -> int:
+        return self.access_token_expire_minutes * 60
+
+    @property
+    def refresh_token_expire_seconds(self) -> int:
+        return self.refresh_token_expire_days * 24 * 3600
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    """Return singleton Settings (cached after first call)."""
+    return Settings()
