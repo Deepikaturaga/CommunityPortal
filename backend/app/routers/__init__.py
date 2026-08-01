@@ -1,1 +1,1 @@
-"""Package marker."""
+"""Routers sub-package."""

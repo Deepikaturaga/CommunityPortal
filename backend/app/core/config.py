@@ -1,15 +1,10 @@
-"""
-Canonical application settings.
-
-Validated at startup via pydantic-settings; no secret is ever hardcoded.
-"""
+"""Application settings — validated at startup via pydantic-settings."""
 
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Literal
+from typing import Annotated
 
-from pydantic import AnyUrl, Field, SecretStr, field_validator
+from pydantic import AnyHttpUrl, EmailStr, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,61 +16,47 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ------------------------------------------------------------------ #
-    # Application
-    # ------------------------------------------------------------------ #
-    app_env: Literal["development", "staging", "production"] = "development"
-    app_name: str = "identity-service"
-    debug: bool = False
+    # ── Application ──────────────────────────────────────────────────────────
+    app_env: str = "development"
+    secret_key: str = Field(min_length=32)
+    allowed_hosts: list[AnyHttpUrl] = []
 
-    # ------------------------------------------------------------------ #
-    # Session cookie
-    # ------------------------------------------------------------------ #
-    session_cookie_name: str = "sid"
-    session_cookie_domain: str | None = None
-    session_cookie_path: str = "/"
-    # Seconds; 0 means session cookie (expires when browser closes)
-    session_cookie_max_age: int = Field(default=3600, gt=0)
-    # Forces Secure flag; auto-True in non-development envs (see validator)
-    session_cookie_secure: bool = True
-    session_cookie_httponly: bool = True
-    session_cookie_samesite: Literal["strict", "lax", "none"] = "lax"
+    # ── Database ─────────────────────────────────────────────────────────────
+    database_url: str  # asyncpg URL for the async engine
+    database_sync_url: str  # psycopg2 URL for Alembic
 
-    # ------------------------------------------------------------------ #
-    # Session store (ElastiCache / Redis)
-    # ------------------------------------------------------------------ #
-    # Full Redis URL, e.g. rediss://user:pass@cluster.cache.amazonaws.com:6379/0
-    redis_url: SecretStr = Field(
-        default=SecretStr("redis://localhost:6379/0"),
-        description="Redis/ElastiCache connection URL (use rediss:// for TLS).",
-    )
-    redis_max_connections: int = Field(default=20, gt=0)
-    redis_socket_timeout: float = Field(default=2.0, gt=0)
-    redis_socket_connect_timeout: float = Field(default=2.0, gt=0)
-    # Namespace prefix for all session keys
-    redis_session_prefix: str = "session:"
+    # ── Email verification ────────────────────────────────────────────────────
+    email_verification_token_ttl: Annotated[int, Field(gt=0)] = 86400
+    email_skip_send: bool = True
+    smtp_host: str = "localhost"
+    smtp_port: Annotated[int, Field(gt=0, lt=65536)] = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: EmailStr = "noreply@example.com"
 
-    # ------------------------------------------------------------------ #
-    # Session data signing
-    # ------------------------------------------------------------------ #
-    # 32-byte hex secret used to sign session IDs; MUST be set in production
-    session_signing_secret: SecretStr = Field(
-        default=SecretStr("change-me-before-production-32b!"),
-        description="HMAC secret for session-ID signing.",
-    )
+    # ── AWS SES (production email provider) ───────────────────────────────────
+    # email_provider: "smtp" (default) | "ses"
+    email_provider: str = "smtp"
+    aws_region: str = "us-east-1"
+    ses_from_arn: str = ""  # optional; uses smtp_from identity when empty
 
-    # ------------------------------------------------------------------ #
-    # Validators
-    # ------------------------------------------------------------------ #
-    @field_validator("session_cookie_secure", mode="before")
+    # ── Security ──────────────────────────────────────────────────────────────
+    password_hash_rounds: Annotated[int, Field(ge=4, le=31)] = 12
+    password_min_length: Annotated[int, Field(ge=8)] = 12
+
+    @field_validator("database_url")
     @classmethod
-    def _enforce_secure_in_prod(cls, v: bool, info: object) -> bool:  # noqa: FBT001
-        # pydantic calls validators before the full model is assembled,
-        # so we rely on a separate check at startup (see lifespan) rather
-        # than trying to read app_env here.
+    def _must_be_asyncpg(cls, v: str) -> str:
+        if "asyncpg" not in v:
+            raise ValueError("database_url must use the asyncpg driver")
         return v
 
 
-@lru_cache(maxsize=1)
+_settings: Settings | None = None
+
+
 def get_settings() -> Settings:
-    return Settings()
+    global _settings
+    if _settings is None:
+        _settings = Settings()  # type: ignore[call-arg]
+    return _settings

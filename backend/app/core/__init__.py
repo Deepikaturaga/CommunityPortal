@@ -1,1 +1,1 @@
-"""core package."""
+"""Core sub-package."""
