@@ -1,27 +1,32 @@
-"""Alembic env — async SQLAlchemy support."""
-from __future__ import annotations
-
+"""Alembic environment — async SQLAlchemy (asyncpg driver)."""
 import asyncio
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# Import all models so metadata is populated
-from app.core.database import Base
-from app.services.posts import models as _post_models  # noqa: F401
-from app.services.posts import comment_model as _comment_models  # noqa: F401
+# Import all models so their metadata is registered before autogenerate
+from app.core.database import Base  # noqa: F401
+import app.auth.models  # noqa: F401
+import app.kb.article_models  # noqa: F401
 
 config = context.config
-if config.config_file_name:
+if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 
 
+def get_url() -> str:
+    # Settings override the ini placeholder at runtime
+    from app.core.config import get_settings
+    return get_settings().database_url
+
+
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = get_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -32,15 +37,17 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection: object) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)  # type: ignore[arg-type]
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_async_migrations() -> None:
+    cfg = config.get_section(config.config_ini_section, {})
+    cfg["sqlalchemy.url"] = get_url()
     connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        cfg,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

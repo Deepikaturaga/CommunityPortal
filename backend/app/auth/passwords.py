@@ -1,14 +1,12 @@
-"""Password hashing utilities using passlib/bcrypt."""
-from __future__ import annotations
-
+"""Password hashing utilities (bcrypt via passlib)."""
 from passlib.context import CryptContext
 
-_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(plain: str) -> str:
-    return _ctx.hash(plain)
+    return _pwd_context.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _ctx.verify(plain, hashed)
+    return _pwd_context.verify(plain, hashed)

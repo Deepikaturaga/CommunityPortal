@@ -1,36 +1,68 @@
-from __future__ import annotations
+"""
+Canonical ASGI application entrypoint.
+
+One FastAPI instance, one lifespan, all routers registered here.
+"""
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
-from app.core.config import settings
-from app.core.database import engine
-from app.models.base import Base
-import app.models.user
-import app.models.content
-import app.models.moderation
-from app.services.moderation.router import router as moderation_router
-from app.services.posts.router import router as posts_router
+
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.config import get_settings
+from app.core.exceptions import http_exception_handler, validation_exception_handler
+from app.core.logging import configure_logging
+
+# Routers
+from app.auth.router import router as auth_router
+from app.kb.kb_router import router as kb_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    if settings.ENVIRONMENT in ("development", "test"):
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    settings = get_settings()
+    configure_logging(settings.log_level)
     yield
-    await engine.dispose()
+    # Shutdown: engine disposal handled at process exit; add explicit cleanup here if needed.
 
-app = FastAPI(title="Moderation Service", version="0.1.0", lifespan=lifespan)
 
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    import logging
-    logging.getLogger(__name__).exception("Unhandled error: %s %s", request.method, request.url)
-    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": "Internal server error"})
+def create_app() -> FastAPI:
+    settings = get_settings()
 
-app.include_router(moderation_router, prefix="/api/v1")
-app.include_router(posts_router, prefix="/api/v1")
+    application = FastAPI(
+        title="KB API",
+        version="1.0.0",
+        docs_url="/api/docs" if settings.environment != "production" else None,
+        redoc_url="/api/redoc" if settings.environment != "production" else None,
+        openapi_url="/api/openapi.json" if settings.environment != "production" else None,
+        lifespan=lifespan,
+    )
 
-@app.get("/health", tags=["ops"], include_in_schema=False)
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # CORS
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+    # Global exception handlers (no internal detail leakage)
+    application.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
+    application.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+
+    # Routers
+    api_prefix = "/api/v1"
+    application.include_router(auth_router, prefix=api_prefix)
+    application.include_router(kb_router, prefix=api_prefix)
+
+    @application.get("/health", tags=["ops"])
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return application
+
+
+app = create_app()

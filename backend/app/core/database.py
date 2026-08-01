@@ -1,10 +1,7 @@
-"""Async SQLAlchemy engine + session factory."""
-from __future__ import annotations
-
+"""Async SQLAlchemy engine + session factory (single canonical instance)."""
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -18,24 +15,24 @@ class Base(DeclarativeBase):
     pass
 
 
-def _build_engine() -> AsyncEngine:
+def _make_engine() -> object:  # returns AsyncEngine; typed loosely to avoid import cycle
     settings = get_settings()
     return create_async_engine(
         settings.database_url,
-        echo=False,
+        echo=settings.environment == "development",
         pool_pre_ping=True,
     )
 
 
-# Module-level singletons — replaced in tests via dependency override
-_engine: AsyncEngine = _build_engine()
-_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
-    bind=_engine,
-    expire_on_commit=False,
+_engine = _make_engine()
+_async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+    bind=_engine,  # type: ignore[arg-type]
     class_=AsyncSession,
+    expire_on_commit=False,
 )
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with _session_factory() as session:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency — yields one session per request."""
+    async with _async_session_factory() as session:
         yield session

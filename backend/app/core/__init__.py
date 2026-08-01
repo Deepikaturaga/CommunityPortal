@@ -1,1 +1,3 @@
-"""Core sub-package."""
+```
+
+### `backend/app/core/config.py`
