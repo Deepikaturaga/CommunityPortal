@@ -1,48 +1,60 @@
-"""User Pydantic schemas (request/response DTOs)."""
 from __future__ import annotations
+
+from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.enums import UserRole
 
-
-class UserBase(BaseModel):
+class UserRegisterRequest(BaseModel):
     email: EmailStr
-    full_name: str | None = None
-    role: UserRole = UserRole.VIEWER
-
-
-class UserCreate(UserBase):
-    password: str = Field(min_length=8)
+    username: str = Field(min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_\-]+$")
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=128)
 
     @field_validator("password")
     @classmethod
-    def _password_strength(cls, v: str) -> str:
+    def password_complexity(cls, v: str) -> str:
         if not any(c.isdigit() for c in v):
             raise ValueError("Password must contain at least one digit")
         return v
 
 
-class UserUpdate(BaseModel):
-    full_name: str | None = None
-    role: UserRole | None = None
-    is_active: bool | None = None
+class UserLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
 
-class UserRead(UserBase):
+class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
-    id: str
+    id: int
+    email: str
+    username: str
+    display_name: str
+    role: str
     is_active: bool
     is_verified: bool
+    bio: str | None
+    avatar_url: str | None
+    created_at: datetime
 
 
-class UserProfileUpdate(BaseModel):
-    """Fields a user can update on their own profile."""
-
-    full_name: str | None = None
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=100)
+    bio: str | None = Field(default=None, max_length=1000)
+    avatar_url: str | None = Field(default=None, max_length=500)
 
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)

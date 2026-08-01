@@ -1,81 +1,79 @@
-"""
-FastAPI application entry-point.
-
-Middleware registration order (outermost → innermost at runtime):
-    SecurityHeadersMiddleware  ← applied last, wraps everything
-    CSRFMiddleware             ← validates tokens for mutating requests
-    … auth / other middleware …
-    Routes
-
-Because Starlette applies add_middleware() in LIFO order, SecurityHeaders must be
-added *after* CSRF so it becomes the outermost wrapper.
-"""
-
 from __future__ import annotations
 
-import logging
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.middleware.csrf import CSRFMiddleware
-from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.core.database import create_all_tables
+from app.core.exceptions import AppError
+from app.routers.auth import router as auth_router, users_router
+from app.routers.discussions import router as discussions_router, posts_router
+from app.routers.kb import router as kb_router
+from app.routers.search import router as search_router
+from app.routers.notifications import router as notifications_router
+from app.routers.admin import router as admin_router
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Ensure models are imported so metadata is populated
+import app.models  # noqa: F401
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("startup: env=%s debug=%s", settings.APP_ENV, settings.DEBUG)
+async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+    await create_all_tables()
     yield
-    logger.info("shutdown")
 
 
 app = FastAPI(
-    title="Backend API",
+    title="Community Platform API",
     version="1.0.0",
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
-    openapi_url="/openapi.json" if settings.DEBUG else None,
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
 
-# ------------------------------------------------------------------
-# CORS — must be registered before CSRF middleware
-# ------------------------------------------------------------------
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", "X-CSRF-Token"],
-    expose_headers=["X-CSRF-Token"],
+    allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------
-# CSRF protection (inner; validates tokens on mutating requests)
-# ------------------------------------------------------------------
-app.add_middleware(CSRFMiddleware)
 
-# ------------------------------------------------------------------
-# Security headers (outer; stamps headers on every response including
-# CSRF-rejected 403s)
-# ------------------------------------------------------------------
-app.add_middleware(SecurityHeadersMiddleware)
+# Global error handler
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-# ------------------------------------------------------------------
-# Health / readiness (exempt from CSRF — GET methods)
-# ------------------------------------------------------------------
-@app.get("/health", tags=["ops"])
-async def health() -> dict[str, str]:
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+# ── Routers ────────────────────────────────────────────────────────────────
+PREFIX = "/api/v1"
+
+app.include_router(auth_router, prefix=PREFIX)
+app.include_router(users_router, prefix=PREFIX)
+app.include_router(discussions_router, prefix=PREFIX)
+app.include_router(posts_router, prefix=PREFIX)
+app.include_router(kb_router, prefix=PREFIX)
+app.include_router(search_router, prefix=PREFIX)
+app.include_router(notifications_router, prefix=PREFIX)
+app.include_router(admin_router, prefix=PREFIX)
+
+
+@app.get("/health")
+async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/readiness", tags=["ops"])
-async def readiness() -> dict[str, str]:
+@app.get("/ready")
+async def ready() -> dict:
     return {"status": "ready"}

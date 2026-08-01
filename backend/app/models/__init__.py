@@ -1,6 +1,7 @@
-"""Models package – import all ORM models so Alembic autogenerate picks them up."""
-
-from app.models.account import Account
-from app.models.content import ContentItem, ContentStatus
-
-__all__ = ["Account", "ContentItem", "ContentStatus"]
+# Import all models so SQLAlchemy metadata is populated
+from app.models.user import User as User, UserRole as UserRole
+from app.models.discussion import Discussion as Discussion, DiscussionStatus as DiscussionStatus
+from app.models.post import Post as Post
+from app.models.kb_article import KBArticle as KBArticle, ArticleStatus as ArticleStatus
+from app.models.notification import Notification as Notification, NotificationKind as NotificationKind
+from app.models.audit_log import AuditLog as AuditLog

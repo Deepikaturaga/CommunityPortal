@@ -1,52 +1,47 @@
-"""Security utilities: password hashing and JWT token management."""
-
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from app.core.config import get_settings
-from app.core.exceptions import UnauthorizedError
+from app.core.config import settings
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(plain: str) -> str:
-    return _pwd_context.hash(plain)
+    return pwd_context.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_context.verify(plain, hashed)
+    return pwd_context.verify(plain, hashed)
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
-    settings = get_settings()
-    expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
-    payload: dict[str, Any] = {"sub": subject, "exp": expire, "iat": datetime.now(UTC)}
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload: dict[str, Any] = {"sub": subject, "exp": expire, "type": "access"}
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(subject: str) -> str:
-    settings = get_settings()
-    expire = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
-    payload: dict[str, Any] = {
-        "sub": subject,
-        "exp": expire,
-        "iat": datetime.now(UTC),
-        "type": "refresh",
-    }
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    return jwt.encode(
+        {"sub": subject, "exp": expire, "type": "refresh"},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    settings = get_settings()
+    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+
+
+def decode_token_safe(token: str) -> dict[str, Any] | None:
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        return payload
-    except JWTError as exc:
-        raise UnauthorizedError("Invalid or expired token") from exc
+        return decode_token(token)
+    except JWTError:
+        return None

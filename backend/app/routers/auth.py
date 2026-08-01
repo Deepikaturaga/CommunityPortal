@@ -1,163 +1,104 @@
-"""Auth/identity router — TASK-015 (register) + TASK-016 (verify/resend)."""
+    UserLoginRequest,
 
+def _app_error(e: AppError) -> HTTPException:
+    return HTTPException(status_code=e.status_code, detail=e.detail)
+
+        raise _app_error(e)
+async def login(req: UserLoginRequest, db: AsyncSession = Depends(get_db)) -> dict:
+        access, refresh = await user_service.authenticate_user(db, req)
+        raise _app_error(e)
+        raise _app_error(e)
+        raise _app_error(e)
+        raise _app_error(e)
+        raise _app_error(e)
 from __future__ import annotations
-
-from fastapi import APIRouter, Depends, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.database import get_db
-from app.core.errors import _err
-from app.schemas.identity import (
-    RegisterRequest,
-    RegisterResponse,
-    ResendVerificationRequest,
-    ResendVerificationResponse,
-    VerifyEmailRequest,
-    VerifyEmailResponse,
+from app.core.deps import get_current_active_user
+from app.core.exceptions import AppError
+from app.models.user import User
+from app.schemas.user_schemas import (
+    UserRegisterRequest,
+    UserResponse,
+    TokenResponse,
+    RefreshRequest,
+    PasswordChangeRequest,
+    UserUpdateRequest,
 )
-from app.services.identity.register import EmailAlreadyRegisteredError, register_user
-from app.services.identity.verify import (
-    TokenAlreadyUsedError,
-    TokenExpiredError,
-    TokenNotFoundError,
-    TokenSupersededError,
-    UserAlreadyVerifiedError,
-    UserNotFoundError,
-    consume_verification_token,
-    resend_verification_token,
-)
-
+from app.services import user_service
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-# ── POST /register ────────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/register",
-    response_model=RegisterResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a new user account",
-    responses={
-        409: {"description": "Email already registered"},
-        422: {"description": "Validation error"},
-    },
-)
-async def register(
-    payload: RegisterRequest,
-    db: AsyncSession = Depends(get_db),  # noqa: B008
-) -> RegisterResponse | JSONResponse:
-    """
-    **AC-001 / AC-002** — Register a new user account.
-
-    - Email is normalised (lower-cased, trimmed) before uniqueness check.
-    - Password policy is enforced by the request schema (Pydantic v2).
-    - On success, a single-use verification token is persisted and the
-      verification email is dispatched (HTTP 201).
-    - On duplicate email → HTTP 409 (no field disclosure).
-    - On policy violation → HTTP 422.
-    """
+users_router = APIRouter(prefix="/users", tags=["users"])
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(req: UserRegisterRequest, db: AsyncSession = Depends(get_db)) -> User:
     try:
-        user = await register_user(db, payload)
-    except EmailAlreadyRegisteredError:
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content=_err(
-                "email_already_registered",
-                "An account with this email address already exists.",
-                field="email",
-            ),
-        )
+        return await user_service.register_user(db, req)
+    except AppError as e:
 
-    return RegisterResponse(
-        message="Registration successful. Please check your email to verify your account.",
-        email=user.email,
-    )
+@router.post("/token", response_model=TokenResponse)
+async def login_form(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
 
-
-# ── POST /verify-email ────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/verify-email",
-    response_model=VerifyEmailResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Consume an email verification token",
-    responses={
-        200: {"description": "Email successfully verified"},
-        404: {"description": "Token not found"},
-        410: {"description": "Token expired, already used, or superseded"},
-        422: {"description": "Validation error"},
-    },
-)
-async def verify_email(
-    payload: VerifyEmailRequest,
-    db: AsyncSession = Depends(get_db),  # noqa: B008
-) -> VerifyEmailResponse | JSONResponse:
-    """
-    **COMP-001** — Consume a single-use email verification token.
-
-    - Expired tokens → HTTP 410 Gone.
-    - Already-consumed tokens → HTTP 410 Gone.
-    - Superseded tokens (user requested a resend) → HTTP 410 Gone.
-    - Unknown token → HTTP 404.
-    """
     try:
-        user = await consume_verification_token(db, payload.token)
-    except TokenNotFoundError:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content=_err("token_not_found", "Verification token not found."),
+        access, refresh = await user_service.authenticate_user(
+            db, UserLoginRequest(email=form_data.username, password=form_data.password)
         )
-    except (TokenExpiredError, TokenAlreadyUsedError, TokenSupersededError):
-        return JSONResponse(
-            status_code=status.HTTP_410_GONE,
-            content=_err(
-                "token_invalid",
-                "This verification link has expired or has already been used. "
-                "Please request a new one.",
-            ),
-        )
-
-    return VerifyEmailResponse(
-        message="Email address verified successfully.",
-        email=user.email,
-    )
+        return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+    except AppError as e:
 
 
-# ── POST /resend-verification ─────────────────────────────────────────────────
+@router.post("/login", response_model=TokenResponse)
 
-
-@router.post(
-    "/resend-verification",
-    response_model=ResendVerificationResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Resend the email verification link",
-    responses={
-        200: {"description": "Verification email sent (or silently accepted)"},
-        422: {"description": "Validation error"},
-    },
-)
-async def resend_verification(
-    payload: ResendVerificationRequest,
-    db: AsyncSession = Depends(get_db),  # noqa: B008
-) -> ResendVerificationResponse:
-    """
-    **COMP-001** — Issue a fresh verification token and dispatch the email.
-
-    The response is always HTTP 200 regardless of whether the email exists or
-    is already verified, to prevent account enumeration (VER-012).
-    Old (unconsumed) tokens for this user are superseded atomically.
-    """
     try:
-        await resend_verification_token(db, payload.email)
-    except (UserNotFoundError, UserAlreadyVerifiedError):
-        # Intentionally indistinguishable from success — anti-enumeration.
-        pass
+        return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+    except AppError as e:
 
-    return ResendVerificationResponse(
-        message=(
-            "If that address is registered and unverified, "
-            "a new verification email has been sent."
-        )
-    )
+
+
+
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        access, new_refresh = await user_service.refresh_tokens(db, req.refresh_token)
+        return {"access_token": access, "refresh_token": new_refresh, "token_type": "bearer"}
+    except AppError as e:
+
+
+@users_router.get("/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_active_user)) -> User:
+    return current_user
+
+
+@users_router.put("/me", response_model=UserResponse)
+async def update_me(
+    req: UserUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    try:
+        return await user_service.update_user_profile(db, current_user, req)
+    except AppError as e:
+
+
+@users_router.post("/me/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    req: PasswordChangeRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    try:
+        await user_service.change_password(db, current_user, req)
+    except AppError as e:
+
+
+@users_router.get("/{user_id}", response_model=UserResponse)
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)) -> User:
+    try:
+        return await user_service.get_user_by_id(db, user_id)
+    except AppError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)

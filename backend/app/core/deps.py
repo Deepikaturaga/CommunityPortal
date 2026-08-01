@@ -1,61 +1,54 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_access_token
-from app.models.user import UserRole
+from app.core.database import get_db
+from app.core.security import decode_token
 
-_bearer = HTTPBearer(auto_error=True)
-
-
-class TokenPayload:
-    def __init__(self, sub: str, role: str) -> None:
-        self.sub = sub
-        self.role = UserRole(role)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 
-def _extract_token(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
-) -> TokenPayload:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> "User":  # noqa: F821
+    from app.models.user import User  # lazy import to avoid circular
+
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
-        payload = decode_access_token(credentials.credentials)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+        payload = decode_token(token)
+        sub: str | None = payload.get("sub")
+        token_type: str | None = payload.get("type")
+        if sub is None or token_type != "access":
+            raise credentials_exc
+    except JWTError:
+        raise credentials_exc
 
-    sub: str | None = payload.get("sub")
-    role: str | None = payload.get("role")
-    if not sub or not role:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing required claims",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        return TokenPayload(sub=sub, role=role)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid role in token",
-        ) from exc
+    from sqlalchemy import select
+
+    result = await db.execute(select(User).where(User.id == int(sub)))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise credentials_exc
+    return user
 
 
-CurrentUser = Annotated[TokenPayload, Depends(_extract_token)]
-
-
-def require_admin(current_user: CurrentUser) -> TokenPayload:
-    if current_user.role != UserRole.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
+async def get_current_active_user(
+    current_user: "User" = Depends(get_current_user),  # noqa: F821
+) -> "User":  # noqa: F821
     return current_user
 
 
-AdminUser = Annotated[TokenPayload, Depends(require_admin)]
+async def require_admin(
+    current_user: "User" = Depends(get_current_user),  # noqa: F821
+) -> "User":  # noqa: F821
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user

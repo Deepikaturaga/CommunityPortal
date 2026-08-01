@@ -1,73 +1,51 @@
 from __future__ import annotations
 
+import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.enums import DiscussionStatus, ReplyStatus
 
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+class DiscussionStatus(str, enum.Enum):
+    open = "open"
+    closed = "closed"
+    locked = "locked"
+    archived = "archived"
 
 
 class Discussion(Base):
-    """Top-level discussion thread."""
-
     __tablename__ = "discussions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    author_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    status: Mapped[DiscussionStatus] = mapped_column(
-        Enum(DiscussionStatus, name="discussionstatus"),
-        nullable=False,
-        default=DiscussionStatus.OPEN,
-        server_default=DiscussionStatus.OPEN.value,
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(
+        Enum(DiscussionStatus, values_callable=lambda x: [e.value for e in x]),
+        default=DiscussionStatus.open.value,
+        nullable=False,
+    )
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tags: Mapped[str | None] = mapped_column(String(500), nullable=True)  # comma-separated
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
-    )
-
-    replies: Mapped[list["Reply"]] = relationship(
-        "Reply", back_populates="discussion", cascade="all, delete-orphan"
-    )
-
-    @property
-    def is_locked(self) -> bool:
-        return self.status == DiscussionStatus.LOCKED
-
-
-class Reply(Base):
-    """A single reply within a discussion thread."""
-
-    __tablename__ = "replies"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    discussion_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("discussions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    author_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[ReplyStatus] = mapped_column(
-        Enum(ReplyStatus, name="replystatus"),
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
-        default=ReplyStatus.VISIBLE,
-        server_default=ReplyStatus.VISIBLE.value,
-    )
-    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
-    discussion: Mapped["Discussion"] = relationship("Discussion", back_populates="replies")
+    author: Mapped["User"] = relationship("User", back_populates="discussions")  # noqa: F821
+    posts: Mapped[list["Post"]] = relationship(  # noqa: F821
+        "Post", back_populates="discussion", cascade="all, delete-orphan", lazy="select"
+    )
