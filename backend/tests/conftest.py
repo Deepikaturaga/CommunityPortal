@@ -1,84 +1,67 @@
-"""Shared pytest fixtures for the backend test suite.
-
-Uses aiosqlite as an in-process database so tests run without Postgres.
-The async SQLite engine is created fresh for each test session.
-"""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import AsyncGenerator
+
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
-from app.core.database import Base, get_db
-from app.core.security import create_access_token
-from app.main import create_app
+from app.models.base import Base
+from app.models.searchable_record import SearchableRecord
+from tests.doubles.in_memory_search import InMemorySearchClient
 
-# ---------------------------------------------------------------------------
-# In-memory SQLite engine (per test session)
-# ---------------------------------------------------------------------------
+# ── In-memory SQLite engine for tests ─────────────────────────────────────────
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
-@pytest_asyncio.fixture(scope="session")
-async def engine():  # type: ignore[no-untyped-def]
-    eng = create_async_engine(TEST_DB_URL, echo=False)
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
-
-
 @pytest_asyncio.fixture()
-async def db_session(engine):  # type: ignore[no-untyped-def]
-    factory = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    engine = create_async_engine(TEST_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     async with factory() as session:
         yield session
-        await session.rollback()  # isolate every test
 
-
-# ---------------------------------------------------------------------------
-# FastAPI test client
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture()
-async def client(db_session: AsyncSession) -> AsyncClient:  # type: ignore[misc]
-    app = create_app()
-
-    async def _override_get_db() -> AsyncSession:  # type: ignore[misc]
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),  # type: ignore[arg-type]
-        base_url="http://test",
-    ) as ac:
-        yield ac  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# JWT token helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_token(role: str) -> str:
-    return create_access_token({"sub": f"user-{role}", "role": role})
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest.fixture()
-def viewer_token() -> str:
-    return _make_token("viewer")
+def search_client() -> InMemorySearchClient:
+    return InMemorySearchClient()
 
 
-@pytest.fixture()
-def editor_token() -> str:
-    return _make_token("editor")
+# ── Factory helpers ────────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
-def admin_token() -> str:
-    return _make_token("admin")
+async def make_record(
+    session: AsyncSession,
+    *,
+    index_name: str = "products",
+    document_type: str = "product",
+    payload: dict | None = None,
+    is_active: bool = True,
+    title: str | None = None,
+) -> SearchableRecord:
+    record = SearchableRecord(
+        id=str(uuid.uuid4()),
+        index_name=index_name,
+        document_type=document_type,
+        payload=payload or {"name": f"record-{uuid.uuid4().hex[:6]}"},
+        title=title,
+        is_active=is_active,
+    )
+    session.add(record)
+    await session.flush()
+    return record

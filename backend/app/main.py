@@ -2,56 +2,46 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
-from app.core.exceptions import register_exception_handlers
-from app.services.search.router import router as search_router
+from app.core.config import settings
+from app.core.logging import configure_logging
+from app.core.search_client import close_search_client
+from services.search.router import router as reconcile_router
+from services.search.scheduler import scheduler_lifespan
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup: validate config eagerly (raises on misconfiguration)
-    get_settings()
-    yield
-    # Shutdown: nothing to tear down for the DB pool in this slice
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    configure_logging()
+    async with scheduler_lifespan():
+        yield
+    await close_search_client()
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
-    app = FastAPI(
-        title="API",
-        version="1.0.0",
-        debug=settings.debug,
-        # Hide /docs + /openapi.json in production
-        docs_url="/docs" if settings.debug else None,
-        redoc_url=None,
-        lifespan=lifespan,
-    )
+app = FastAPI(
+    title="Search Reconciliation API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.environment != "production" else None,
+    redoc_url=None,
+)
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[],  # Tighten per deployment; default deny
-        allow_credentials=False,
-        allow_methods=["GET", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[] if settings.environment == "production" else ["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    register_exception_handlers(app)
-
-    # Routers
-    app.include_router(search_router, prefix="/api/v1")
-
-    # Health / readiness
-    @app.get("/health", include_in_schema=False)
-    async def _health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    return app
+app.include_router(reconcile_router, prefix="/api/v1")
 
 
-app = create_app()
+@app.get("/health", tags=["ops"])
+async def health() -> dict[str, str]:
+    return {"status": "ok"}

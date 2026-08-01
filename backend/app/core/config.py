@@ -1,8 +1,8 @@
-"""Application settings validated at startup via pydantic-settings."""
+"""Application configuration — validated at startup via pydantic-settings."""
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,35 +11,37 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
     )
 
-    # Database
-    database_url: str = Field(..., description="SQLAlchemy async DSN")
+    # ── Database ──────────────────────────────────────────────────────────────
+    database_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/app",
+        description="Async SQLAlchemy database URL",
+    )
 
-    # Auth / JWT
-    secret_key: str = Field(..., min_length=32, description="HS256 signing key")
-    algorithm: str = Field(default="HS256")
-    access_token_expire_minutes: int = Field(default=30, gt=0)
+    # ── Search backend ────────────────────────────────────────────────────────
+    search_host: AnyHttpUrl = Field(
+        default="http://localhost:9200",  # type: ignore[assignment]
+        description="OpenSearch / Elasticsearch base URL",
+    )
+    search_username: str = Field(default="admin")
+    search_password: SecretStr = Field(default=SecretStr("admin"))
+    search_use_ssl: bool = Field(default=False)
+    search_verify_certs: bool = Field(default=False)
 
-    # Runtime
-    debug: bool = Field(default=False)
+    # ── Reconciliation job ────────────────────────────────────────────────────
+    reindex_batch_size: int = Field(default=500, gt=0, le=10_000)
+    reindex_scroll_timeout: str = Field(default="5m")
+    reindex_max_retries: int = Field(default=3, ge=0)
 
-    @field_validator("database_url")
-    @classmethod
-    def _no_sync_driver(cls, v: str) -> str:
-        if v.startswith("postgresql://"):
-            # Transparently upgrade legacy DSNs to asyncpg
-            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
-        return v
+    # ── Scheduler (APScheduler) ────────────────────────────────────────────────
+    reindex_cron_enabled: bool = Field(default=False)
+    reindex_cron_hour: int = Field(default=2, ge=0, le=23)
+    reindex_cron_minute: int = Field(default=0, ge=0, le=59)
+
+    # ── General ────────────────────────────────────────────────────────────────
+    environment: str = Field(default="development")
+    log_level: str = Field(default="INFO")
 
 
-_settings: Settings | None = None
-
-
-def get_settings() -> Settings:
-    """Return (and cache) the application settings singleton."""
-    global _settings  # noqa: PLW0603
-    if _settings is None:
-        _settings = Settings()
-    return _settings
+settings = Settings()

@@ -1,4 +1,4 @@
-"""Alembic environment — async SQLAlchemy 2.0."""
+"""Alembic environment — async SQLAlchemy."""
 
 from __future__ import annotations
 
@@ -8,42 +8,37 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.config import get_settings
-from app.core.database import Base
-
-# Ensure all models are imported so metadata is populated
-import app.services.search.models  # noqa: F401
+from app.core.config import settings
+from app.models.base import Base
+from app.models.searchable_record import SearchableRecord  # noqa: F401 — register model
 
 config = context.config
-fileConfig(config.config_file_name)  # type: ignore[arg-type]
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = get_settings().database_url
+    url = settings.database_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection):  # type: ignore[no-untyped-def]
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-        compare_type=True,
-    )
+    context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(settings.database_url)
     async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await engine.dispose()

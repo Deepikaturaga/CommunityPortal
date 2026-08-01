@@ -1,3 +1,1 @@
-```
-
-### `backend/app/models/content.py`
+"""app.models package."""
