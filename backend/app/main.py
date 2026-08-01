@@ -1,47 +1,36 @@
-"""ASGI entrypoint — single canonical FastAPI application."""
 from __future__ import annotations
-
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI
-
-from app.core.config import get_settings
-from app.core.exceptions import register_exception_handlers
-from app.core.logging import configure_logging
-from app.services.posts.comments_router import router as comments_router
-
+from collections.abc import AsyncGenerator
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+from app.core.config import settings
+from app.core.database import engine
+from app.models.base import Base
+import app.models.user
+import app.models.content
+import app.models.moderation
+from app.services.moderation.router import router as moderation_router
+from app.services.posts.router import router as posts_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    settings = get_settings()
-    configure_logging()
-    # Validate settings eagerly at startup (pydantic-settings raises on bad config)
-    _ = settings
+    if settings.ENVIRONMENT in ("development", "test"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
-    # Shutdown: SQLAlchemy engine disposal handled per-request via DI
+    await engine.dispose()
 
+app = FastAPI(title="Moderation Service", version="0.1.0", lifespan=lifespan)
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title="Posts Service",
-        version="0.1.0",
-        lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
-    )
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    import logging
+    logging.getLogger(__name__).exception("Unhandled error: %s %s", request.method, request.url)
+    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": "Internal server error"})
 
-    register_exception_handlers(app)
+app.include_router(moderation_router, prefix="/api/v1")
+app.include_router(posts_router, prefix="/api/v1")
 
-    # ── Routers ──────────────────────────────────────────────────────────────
-    app.include_router(comments_router, prefix="/v1")
-
-    # ── Health ───────────────────────────────────────────────────────────────
-    @app.get("/health", tags=["ops"], include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    return app
-
-
-app = create_app()
+@app.get("/health", tags=["ops"], include_in_schema=False)
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
