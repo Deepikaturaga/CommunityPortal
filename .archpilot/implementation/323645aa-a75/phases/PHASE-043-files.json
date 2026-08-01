@@ -1,0 +1,15 @@
+[
+  "backend/.env.example",
+  "backend/app/__init__.py",
+  "backend/app/core/__init__.py",
+  "backend/app/core/config.py",
+  "backend/app/main.py",
+  "backend/app/middleware/__init__.py",
+  "backend/app/middleware/csrf.py",
+  "backend/app/middleware/security_headers.py",
+  "backend/pyproject.toml",
+  "backend/tests/__init__.py",
+  "backend/tests/conftest.py",
+  "backend/tests/test_csrf_middleware.py",
+  "backend/tests/test_security_headers.py"
+]
