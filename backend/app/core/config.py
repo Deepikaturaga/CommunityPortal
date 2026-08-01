@@ -1,9 +1,8 @@
+"""Application settings validated at startup via pydantic-settings."""
+
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Literal
-
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,39 +14,32 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── App ────────────────────────────────────────────────────────────────────
-    environment: Literal["development", "test", "production"] = "development"
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Database
+    database_url: str = Field(..., description="SQLAlchemy async DSN")
 
-    # ── Database ───────────────────────────────────────────────────────────────
-    database_url: str = Field(
-        default="postgresql+asyncpg://user:password@localhost:5432/appdb"
-    )
+    # Auth / JWT
+    secret_key: str = Field(..., min_length=32, description="HS256 signing key")
+    algorithm: str = Field(default="HS256")
+    access_token_expire_minutes: int = Field(default=30, gt=0)
 
-    # ── OpenSearch ─────────────────────────────────────────────────────────────
-    opensearch_url: str = Field(default="http://localhost:9200")
-    opensearch_index_prefix: str = Field(default="content")
-    opensearch_username: str = Field(default="")
-    opensearch_password: SecretStr = Field(default=SecretStr(""))
+    # Runtime
+    debug: bool = Field(default=False)
 
-    # ── Security ───────────────────────────────────────────────────────────────
-    secret_key: SecretStr = Field(default=SecretStr("change-me-in-production"))
-
-    @field_validator("secret_key", mode="after")
+    @field_validator("database_url")
     @classmethod
-    def _secret_key_not_default_in_prod(cls, v: SecretStr, info: object) -> SecretStr:
-        # Validate at startup; actual enforcement happens in lifespan.
+    def _no_sync_driver(cls, v: str) -> str:
+        if v.startswith("postgresql://"):
+            # Transparently upgrade legacy DSNs to asyncpg
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
-    @property
-    def opensearch_index_content(self) -> str:
-        return f"{self.opensearch_index_prefix}_items"
 
-    @property
-    def opensearch_index_processed_events(self) -> str:
-        return f"{self.opensearch_index_prefix}_processed_events"
+_settings: Settings | None = None
 
 
-@lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    """Return (and cache) the application settings singleton."""
+    global _settings  # noqa: PLW0603
+    if _settings is None:
+        _settings = Settings()
+    return _settings

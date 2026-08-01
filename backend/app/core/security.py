@@ -1,82 +1,68 @@
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+"""JWT-based authentication utilities and FastAPI security dependencies."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.database import get_db
+from app.core.config import get_settings
 
-ALGORITHM = "HS256"
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 
-class TokenPayload(BaseModel):
+class TokenData(BaseModel):
     sub: str
-    role: str
+    role: str = "viewer"
 
 
-def create_access_token(user_id: str, role: str) -> str:
-    payload = {"sub": user_id, "role": role, "exp": expire}
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+def create_access_token(
+    data: dict[str, Any],
+    expires_delta: timedelta | None = None,
+) -> str:
+    settings = get_settings()
+    to_encode = data.copy()
+    expire = datetime.now(UTC) + (
+        expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
+    )
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
-async def get_current_user_payload(token: str = Depends(oauth2_scheme)) -> TokenPayload:
+def _decode_token(token: str) -> TokenData:
+    settings = get_settings()
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        raw = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = raw.get("sub")
-        role = raw.get("role")
-        if user_id is None or role is None:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        sub: str | None = payload.get("sub")
+        role: str = payload.get("role", "viewer")
+        if sub is None:
             raise credentials_exc
-        return TokenPayload(sub=user_id, role=role)
-    except JWTError:
-        raise credentials_exc
+        return TokenData(sub=sub, role=role)
+    except JWTError as exc:
+        raise credentials_exc from exc
 
 
-async def require_moderator(
-    payload: TokenPayload = Depends(get_current_user_payload),
-    db: AsyncSession = Depends(get_db),
-) -> TokenPayload:
-    if payload.role not in ("moderator", "admin"):
+async def get_current_user(token: str = Depends(_oauth2_scheme)) -> TokenData:
+    """FastAPI dependency — returns the validated token payload."""
+    return _decode_token(token)
+
+
+async def get_current_editor(
+    current_user: TokenData = Depends(get_current_user),
+) -> TokenData:
+    """Restrict to users with role `editor` or `admin`."""
+    if current_user.role not in ("editor", "admin"):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Moderator role required"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
         )
-    return payload
-
-
-async def get_optional_user_payload(
-    request: Request,
-) -> Optional[TokenPayload]:
-    """Return the caller's ``TokenPayload`` if a valid Bearer token is present,
-    otherwise return ``None`` (no error).
-
-    Used by the KB visibility endpoint (AC-025.3): anonymous / non-privileged
-    callers receive 404 for non-approved articles; privileged callers see all.
-    The function never raises — an invalid or absent token simply yields ``None``.
-    """
-    auth_header: str | None = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return None
-    token = auth_header[len("Bearer ") :]
-    try:
-        raw = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str | None = raw.get("sub")
-        role: str | None = raw.get("role")
-        if user_id is None or role is None:
-            return None
-        return TokenPayload(sub=user_id, role=role)
-    except JWTError:
-        return None
+    return current_user

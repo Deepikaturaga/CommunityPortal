@@ -1,40 +1,28 @@
-"""Global HTTP exception handlers — no internal detail leakage."""
-from fastapi import Request
+"""Shared error handling and response envelope."""
+
+from __future__ import annotations
+
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-import structlog
-
-logger = structlog.get_logger(__name__)
+from pydantic import ValidationError
 
 
-async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, StarletteHTTPException)
-    # Log 5xx at error, 4xx at warning
-    lvl = "error" if exc.status_code >= 500 else "warning"
-    getattr(logger, lvl)(
-        "http_exception",
-        method=request.method,
-        path=request.url.path,
-        status=exc.status_code,
-    )
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
-    )
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ValidationError)
+    async def _validation_error_handler(
+        _request: Request, exc: ValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": exc.errors(include_url=False)},
+        )
 
-
-async def validation_exception_handler(
-    request: Request, exc: Exception
-) -> JSONResponse:
-    assert isinstance(exc, RequestValidationError)
-    logger.warning(
-        "validation_error",
-        method=request.method,
-        path=request.url.path,
-        errors=exc.errors(),
-    )
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors()},
-    )
+    @app.exception_handler(Exception)
+    async def _unhandled_error_handler(
+        _request: Request, exc: Exception
+    ) -> JSONResponse:
+        # Never leak internals; log correlation id in production
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"},
+        )

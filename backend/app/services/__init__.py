@@ -1,3 +1,1 @@
-```
-
-### `backend/app/services/event_bus.py`
+"""Package marker."""

@@ -1,3 +1,1 @@
-```
-
-### `backend/app/core/config.py`
+"""Package marker."""

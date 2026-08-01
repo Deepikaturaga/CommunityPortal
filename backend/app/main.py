@@ -1,66 +1,55 @@
+"""ASGI application entrypoint."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.core.logging import configure_logging
-from app.services.event_bus import get_event_bus
-from app.services.search.indexer import create_indexer
-from app.services.search.subscriber import register_search_subscriber
-
-logger = structlog.get_logger(__name__)
+from app.core.exceptions import register_exception_handlers
+from app.services.search.router import router as search_router
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    cfg = get_settings()
-    configure_logging(cfg.log_level)
-
-    if cfg.environment == "production" and (
-        cfg.secret_key.get_secret_value() == "change-me-in-production"
-    ):
-        raise RuntimeError("SECRET_KEY must be changed in production")
-
-    # Bootstrap search indexer and wire subscriber.
-    indexer = await create_indexer(cfg)
-    bus = get_event_bus()
-    register_search_subscriber(bus, indexer)
-
-    logger.info("app.startup", environment=cfg.environment)
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    # Startup: validate config eagerly (raises on misconfiguration)
+    get_settings()
     yield
-
-    # Graceful shutdown.
-    await indexer._os.close()
-    logger.info("app.shutdown")
+    # Shutdown: nothing to tear down for the DB pool in this slice
 
 
 def create_app() -> FastAPI:
-    cfg = get_settings()
+    settings = get_settings()
     app = FastAPI(
-        title="Content API",
+        title="API",
         version="1.0.0",
-        docs_url="/api/docs" if cfg.environment != "production" else None,
-        redoc_url="/api/redoc" if cfg.environment != "production" else None,
+        debug=settings.debug,
+        # Hide /docs + /openapi.json in production
+        docs_url="/docs" if settings.debug else None,
+        redoc_url=None,
         lifespan=lifespan,
     )
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if cfg.environment == "development" else [],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=[],  # Tighten per deployment; default deny
+        allow_credentials=False,
+        allow_methods=["GET", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
-    # ── Routers ────────────────────────────────────────────────────────────────
-    from app.routers import health  # noqa: PLC0415
+    register_exception_handlers(app)
 
-    app.include_router(health.router, prefix="/api")
+    # Routers
+    app.include_router(search_router, prefix="/api/v1")
+
+    # Health / readiness
+    @app.get("/health", include_in_schema=False)
+    async def _health() -> dict[str, str]:
+        return {"status": "ok"}
 
     return app
 

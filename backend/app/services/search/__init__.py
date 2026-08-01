@@ -1,3 +1,1 @@
-```
-
-### `backend/app/services/search/indexer.py`
+"""Package marker."""
