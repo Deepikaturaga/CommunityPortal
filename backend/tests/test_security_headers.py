@@ -1,202 +1,142 @@
-"""Tests for TASK-007 - security headers and TLS enforcement.
+"""
+Tests for SecurityHeadersMiddleware — VER-013
+=============================================
 
-Exit-criteria coverage:
-  TLS 1.2+ enforcement: non-HTTPS requests redirected (301) via X-Forwarded-Proto
-  HSTS present on all responses
-  CSP present on all responses
-  X-Frame-Options: DENY on all responses
-  X-Content-Type-Options: nosniff on all responses
-  Referrer-Policy present on all responses
-  Permissions-Policy present on all responses
-  Cache-Control: no-store default
-  ALB health-check path exempt from HTTPS redirect
-  CORS headers present for allowed origins
-  CORS wildcard + credentials raises config error (OWASP A05)
+Coverage
+--------
+* X-Content-Type-Options: nosniff on every response.
+* X-Frame-Options: DENY on every response.
+* Content-Security-Policy includes restrictive directives.
+* Referrer-Policy: strict-origin-when-cross-origin.
+* Permissions-Policy present and disables dangerous features.
+* Cache-Control: no-store on API responses.
+* Cross-Origin-*-Policy headers present.
+* HSTS NOT present when COOKIE_SECURE=false (dev mode).
+* Server / X-Powered-By headers stripped.
+* Headers present on 403 CSRF-rejected responses too.
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
-from httpx import ASGITransport, AsyncClient
 
-from app.core.config import Settings
-from app.main import create_app
+os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-testing-0")
+os.environ.setdefault("COOKIE_SECURE", "false")
+os.environ.setdefault("ALLOWED_ORIGINS", '["http://testserver"]')
 
-# ── Helper ────────────────────────────────────────────────────────────────────
-
-
-def _make_client(settings: Settings) -> AsyncClient:
-    app = create_app(settings)
-    return AsyncClient(transport=ASGITransport(app=app), base_url="https://testserver")
+from fastapi.testclient import TestClient  # noqa: E402
 
 
-# ── Security header presence on normal responses ──────────────────────────────
+@pytest.fixture()
+def tc() -> TestClient:
+    from app.main import app  # noqa: PLC0415
+
+    return TestClient(app, raise_server_exceptions=True)
 
 
-class TestSecurityHeadersPresent:
-    async def test_hsts_on_health(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert r.status_code == 200
-        assert "strict-transport-security" in r.headers
-
-    async def test_hsts_value(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        hsts = r.headers["strict-transport-security"]
-        assert "max-age=31536000" in hsts
-        assert "includeSubDomains" in hsts
-
-    async def test_csp_present(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert "content-security-policy" in r.headers
-
-    async def test_csp_value(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert "default-src 'none'" in r.headers["content-security-policy"]
-        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
-
-    async def test_x_frame_options(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert r.headers.get("x-frame-options") == "DENY"
-
-    async def test_x_content_type_options(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
+class TestSecurityHeadersOnSuccessResponse:
+    def test_x_content_type_options(self, tc: TestClient) -> None:
+        r = tc.get("/health")
         assert r.headers.get("x-content-type-options") == "nosniff"
 
-    async def test_referrer_policy(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert "referrer-policy" in r.headers
+    def test_x_frame_options(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert r.headers.get("x-frame-options") == "DENY"
 
-    async def test_permissions_policy(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
-        assert "permissions-policy" in r.headers
+    def test_csp_present(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        csp = r.headers.get("content-security-policy", "")
+        assert "default-src 'self'" in csp
 
-    async def test_cache_control_default(self, client: AsyncClient) -> None:
-        r = await client.get("/health", headers={"x-forwarded-proto": "https"})
+    def test_csp_frame_ancestors_none(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        csp = r.headers.get("content-security-policy", "")
+        assert "frame-ancestors 'none'" in csp
+
+    def test_csp_object_src_none(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        csp = r.headers.get("content-security-policy", "")
+        assert "object-src 'none'" in csp
+
+    def test_referrer_policy(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert r.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    def test_permissions_policy_present(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        pp = r.headers.get("permissions-policy", "")
+        assert "camera=()" in pp
+        assert "microphone=()" in pp
+        assert "geolocation=()" in pp
+
+    def test_cache_control_no_store(self, tc: TestClient) -> None:
+        r = tc.get("/health")
         assert r.headers.get("cache-control") == "no-store"
 
+    def test_cross_origin_opener_policy(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert r.headers.get("cross-origin-opener-policy") == "same-origin"
 
-# ── TLS enforcement via X-Forwarded-Proto ─────────────────────────────────────
+    def test_cross_origin_resource_policy(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert r.headers.get("cross-origin-resource-policy") == "same-origin"
 
+    def test_cross_origin_embedder_policy(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert r.headers.get("cross-origin-embedder-policy") == "require-corp"
 
-class TestTLSEnforcement:
-    async def test_http_request_redirected_to_https(self, client: AsyncClient) -> None:
-        """Non-HTTPS requests must be 301-redirected (TLS 1.2+ enforcement signal)."""
-        r = await client.get(
-            "/api/non-health-path",
-            headers={"x-forwarded-proto": "http"},
-            follow_redirects=False,
-        )
-        assert r.status_code == 301
-        assert r.headers["location"].startswith("https://")
+    def test_server_header_stripped(self, tc: TestClient) -> None:
+        r = tc.get("/health")
+        assert "server" not in r.headers or r.headers["server"] == ""
 
-    async def test_https_request_not_redirected(self, client: AsyncClient) -> None:
-        r = await client.get(
-            "/health",
-            headers={"x-forwarded-proto": "https"},
-            follow_redirects=False,
-        )
-        assert r.status_code == 200
-
-    async def test_health_path_exempt_from_redirect(self, client: AsyncClient) -> None:
-        """/health is in _HEALTH_PATHS so the middleware skips the 301 redirect."""
-        r = await client.get(
-            "/health",
-            headers={"x-forwarded-proto": "http"},
-            follow_redirects=False,
-        )
-        assert r.status_code == 200
-
-    async def test_healthz_path_exempt_from_redirect(self, client: AsyncClient) -> None:
-        r = await client.get(
-            "/healthz",
-            headers={"x-forwarded-proto": "http"},
-            follow_redirects=False,
-        )
-        assert r.status_code == 200
-
-    async def test_no_proxy_mode_no_redirect(self, client_no_proxy: AsyncClient) -> None:
-        """When https_behind_proxy=False, no redirect and no HSTS."""
-        r = await client_no_proxy.get("/health", follow_redirects=False)
-        assert r.status_code == 200
-        assert "strict-transport-security" not in r.headers
-
-    async def test_hsts_absent_when_no_proxy(self, client_no_proxy: AsyncClient) -> None:
-        r = await client_no_proxy.get("/health")
+    def test_hsts_absent_in_dev(self, tc: TestClient) -> None:
+        """COOKIE_SECURE=false in test env → HSTS must NOT be emitted."""
+        r = tc.get("/health")
         assert "strict-transport-security" not in r.headers
 
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
+class TestSecurityHeadersOnCSRFRejection:
+    """Security headers must be present even on 403 CSRF-rejected responses."""
+
+    def test_headers_on_403(self, tc: TestClient) -> None:
+        r = tc.post("/api/v1/any-endpoint", json={})
+        assert r.status_code == 403
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert r.headers.get("x-frame-options") == "DENY"
+        assert "content-security-policy" in r.headers
+        assert r.headers.get("cross-origin-opener-policy") == "same-origin"
 
 
-class TestCORS:
-    async def test_cors_allowed_origin(self, client: AsyncClient) -> None:
-        r = await client.options(
-            "/health",
-            headers={
-                "Origin": "https://app.example.com",
-                "Access-Control-Request-Method": "GET",
-                "x-forwarded-proto": "https",
-            },
-        )
-        assert r.headers.get("access-control-allow-origin") == "https://app.example.com"
+class TestHSTSInProduction:
+    """HSTS must be emitted when COOKIE_SECURE=true."""
 
-    async def test_cors_disallowed_origin(self, client: AsyncClient) -> None:
-        r = await client.options(
-            "/health",
-            headers={
-                "Origin": "https://evil.example.com",
-                "Access-Control-Request-Method": "GET",
-                "x-forwarded-proto": "https",
-            },
-        )
-        assert r.headers.get("access-control-allow-origin") is None
+    def test_hsts_present_when_cookie_secure(self) -> None:
+        import importlib
+        import sys
 
-    async def test_cors_credentials_reflected(self, client: AsyncClient) -> None:
-        r = await client.options(
-            "/health",
-            headers={
-                "Origin": "https://app.example.com",
-                "Access-Control-Request-Method": "GET",
-                "x-forwarded-proto": "https",
-            },
-        )
-        assert r.headers.get("access-control-allow-credentials") == "true"
+        # Temporarily override env and reload settings + app
+        env_backup = os.environ.copy()
+        os.environ["COOKIE_SECURE"] = "true"
 
+        # Remove cached modules so settings reload
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("app"):
+                del sys.modules[mod]
 
-# ── Config validation ─────────────────────────────────────────────────────────
+        try:
+            from app.main import app  # noqa: PLC0415
 
-
-class TestConfigValidation:
-    def test_wildcard_with_credentials_raises(self) -> None:
-        """OWASP A05: wildcard + credentials is a misconfiguration."""
-        with pytest.raises(ValueError, match="wildcard"):
-            Settings(
-                cors_allow_origins=["*"],
-                cors_allow_credentials=True,
-            )
-
-    def test_wildcard_without_credentials_ok(self) -> None:
-        s = Settings(cors_allow_origins=["*"], cors_allow_credentials=False)
-        assert "*" in s.cors_allow_origins
-
-    def test_csv_origins_parsed(self) -> None:
-        s = Settings(
-            cors_allow_origins="https://a.example.com,https://b.example.com",  # type: ignore[arg-type]
-            cors_allow_credentials=False,
-        )
-        assert len(s.cors_allow_origins) == 2
-
-    def test_hsts_header_includes_subdomains(self) -> None:
-        from app.middleware.security_headers import SecurityHeadersMiddleware
-
-        s = Settings(https_behind_proxy=True, hsts_include_subdomains=True, hsts_preload=False)
-        val = SecurityHeadersMiddleware._build_hsts(s)
-        assert "includeSubDomains" in val
-        assert "preload" not in val
-
-    def test_hsts_header_with_preload(self) -> None:
-        from app.middleware.security_headers import SecurityHeadersMiddleware
-
-        s = Settings(https_behind_proxy=True, hsts_include_subdomains=True, hsts_preload=True)
-        val = SecurityHeadersMiddleware._build_hsts(s)
-        assert "preload" in val
+            with TestClient(app, raise_server_exceptions=True) as tc_prod:
+                r = tc_prod.get("/health")
+                hsts = r.headers.get("strict-transport-security", "")
+                assert "max-age=" in hsts
+                assert "includeSubDomains" in hsts
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+            for mod in list(sys.modules.keys()):
+                if mod.startswith("app"):
+                    del sys.modules[mod]
+            importlib.invalidate_caches()

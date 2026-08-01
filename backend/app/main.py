@@ -1,80 +1,81 @@
 """
-Canonical ASGI entrypoint.
+FastAPI application entry-point.
 
-Lifespan:
-  startup  – (nothing to do; engine + Redis are lazily initialised)
-  shutdown – dispose DB engine + close Redis connection pool
+Middleware registration order (outermost → innermost at runtime):
+    SecurityHeadersMiddleware  ← applied last, wraps everything
+    CSRFMiddleware             ← validates tokens for mutating requests
+    … auth / other middleware …
+    Routes
 
-Middleware stack (outermost → innermost):
-  1. RateLimitHeaderMiddleware – attaches RateLimit-* headers
-  2. (future: CORS, trusted-host, etc.)
-
-Routers:
-  /api/v1/auth     – registration, login
-  /api/v1/content  – content CRUD
+Because Starlette applies add_middleware() in LIFO order, SecurityHeaders must be
+added *after* CSRF so it becomes the outermost wrapper.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
-from app.core.database import close_engine
-from app.core.exceptions import AppError, app_error_handler
-from app.core.redis_client import close_redis
-from app.middleware.ratelimit_headers import RateLimitHeaderMiddleware
-from app.routers.auth_router import router as auth_router
-from app.routers.content_router import router as content_router
+from app.core.config import settings
+from app.middleware.csrf import CSRFMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
-    # startup
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    logger.info("startup: env=%s debug=%s", settings.APP_ENV, settings.DEBUG)
     yield
-    # shutdown
-    await close_engine()
-    await close_redis()
+    logger.info("shutdown")
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+app = FastAPI(
+    title="Backend API",
+    version="1.0.0",
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
+    lifespan=lifespan,
+)
 
-    application = FastAPI(
-        title="Application API",
-        version="1.0.0",
-        docs_url="/docs" if settings.app_env != "production" else None,
-        redoc_url="/redoc" if settings.app_env != "production" else None,
-        lifespan=lifespan,
-    )
+# ------------------------------------------------------------------
+# CORS — must be registered before CSRF middleware
+# ------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", "X-CSRF-Token"],
+    expose_headers=["X-CSRF-Token"],
+)
 
-    # ── Middleware ────────────────────────────────────────────────────────────
-    # NOTE: CORS origins must be configured per-deployment; default deny-all.
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=[],
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
-    application.add_middleware(RateLimitHeaderMiddleware)
+# ------------------------------------------------------------------
+# CSRF protection (inner; validates tokens on mutating requests)
+# ------------------------------------------------------------------
+app.add_middleware(CSRFMiddleware)
 
-    # ── Global error handler ──────────────────────────────────────────────────
-    application.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
-
-    # ── Routers ───────────────────────────────────────────────────────────────
-    application.include_router(auth_router, prefix="/api/v1")
-    application.include_router(content_router, prefix="/api/v1")
-
-    # ── Health ────────────────────────────────────────────────────────────────
-    @application.get("/health", tags=["ops"], include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    return application
+# ------------------------------------------------------------------
+# Security headers (outer; stamps headers on every response including
+# CSRF-rejected 403s)
+# ------------------------------------------------------------------
+app.add_middleware(SecurityHeadersMiddleware)
 
 
-app = create_app()
+# ------------------------------------------------------------------
+# Health / readiness (exempt from CSRF — GET methods)
+# ------------------------------------------------------------------
+@app.get("/health", tags=["ops"])
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readiness", tags=["ops"])
+async def readiness() -> dict[str, str]:
+    return {"status": "ready"}

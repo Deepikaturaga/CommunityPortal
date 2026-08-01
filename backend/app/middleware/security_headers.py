@@ -1,18 +1,23 @@
-"""Security-headers middleware (TASK-007 / COMP-012).
+"""
+Security Headers Middleware — TASK-059 / NFR-004
+================================================
 
-Injects on **every** response:
-  - Strict-Transport-Security  (HSTS)  — TLS 1.2+ enforcement signal to browsers
-  - Content-Security-Policy
-  - X-Content-Type-Options
-  - X-Frame-Options
-  - Referrer-Policy
-  - Permissions-Policy
-  - Cache-Control               (safe default; callers may override per-route)
+Injects a hardened set of HTTP response headers on every outbound response:
 
-It also enforces that inbound requests arrive over HTTPS when the app is deployed
-behind a TLS-terminating AWS ALB (https_behind_proxy=True) by inspecting the
-X-Forwarded-Proto header.  Non-HTTPS requests receive a 301 redirect so that
-HTTP never silently succeeds (OWASP A02 – Cryptographic Failures).
+* Content-Security-Policy  — restrictive default; adjust per-route if needed.
+* Strict-Transport-Security — max-age=63072000 (2 years) + includeSubDomains + preload.
+* X-Content-Type-Options   — nosniff
+* X-Frame-Options           — DENY  (also covered by CSP frame-ancestors)
+* Referrer-Policy           — strict-origin-when-cross-origin
+* Permissions-Policy        — disables sensitive browser features.
+* Cache-Control             — no-store for API responses (avoids caching auth data).
+* Cross-Origin-Opener-Policy     — same-origin
+* Cross-Origin-Resource-Policy   — same-origin
+* Cross-Origin-Embedder-Policy   — require-corp
+
+The headers are applied unconditionally.  Downstream code that intentionally needs
+a different policy (e.g., a public media-serving route) must override via the
+response object after this middleware runs.
 """
 
 from __future__ import annotations
@@ -20,89 +25,102 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
-from starlette.datastructures import URL
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import Response
 from starlette.types import ASGIApp
 
-from app.core.config import Settings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Routes that must remain exempt from the HTTPS redirect (e.g. ALB health-checks
-# arriving over plain HTTP on a private subnet).
-_HEALTH_PATHS: frozenset[str] = frozenset({"/health", "/healthz", "/ping"})
+# ---------------------------------------------------------------------------
+# Header values
+# ---------------------------------------------------------------------------
+
+_HSTS: str = "max-age=63072000; includeSubDomains; preload"
+
+_CSP: str = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",  # tighten once nonce/hash pipeline is in place
+        "img-src 'self' data: https:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "media-src 'none'",
+        "object-src 'none'",
+        "child-src 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "base-uri 'self'",
+        "upgrade-insecure-requests",
+    ]
+)
+
+_PERMISSIONS: str = (
+    "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), "
+    "clipboard-write=(self), display-capture=(), encrypted-media=(), "
+    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), "
+    "microphone=(), midi=(), payment=(), picture-in-picture=(), "
+    "publickey-credentials-get=(), screen-wake-lock=(), "
+    "sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()"
+)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add security headers and optionally enforce HTTPS on every response."""
+    """
+    Applies a hardened set of security response headers to every reply.
 
-    def __init__(self, app: ASGIApp, settings: Settings) -> None:
+    Attach *after* CSRFMiddleware so headers are present even on 403 rejections::
+
+        app.add_middleware(CSRFMiddleware)
+        app.add_middleware(SecurityHeadersMiddleware)
+
+    Starlette applies middleware in reverse-addition order (last added = outermost).
+    With the ordering above, SecurityHeadersMiddleware wraps CSRFMiddleware, so
+    security headers appear even on CSRF-rejected responses.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
-        self._settings = settings
-        self._hsts_value = self._build_hsts(settings)
-        self._csp_value = settings.csp_policy
 
-    # ── HSTS header value ─────────────────────────────────────────────────────
-    @staticmethod
-    def _build_hsts(s: Settings) -> str:
-        value = f"max-age={s.hsts_max_age}"
-        if s.hsts_include_subdomains:
-            value += "; includeSubDomains"
-        if s.hsts_preload:
-            value += "; preload"
-        return value
-
-    # ── Middleware dispatch ───────────────────────────────────────────────────
     async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # ── HTTPS enforcement (ALB proxy mode) ────────────────────────────────
-        if self._settings.https_behind_proxy:
-            proto = request.headers.get("x-forwarded-proto", "https")
-            if proto != "https" and request.url.path not in _HEALTH_PATHS:
-                https_url = URL(
-                    scope={
-                        **request.scope,
-                        "scheme": "https",
-                    }
-                )
-                logger.warning("Redirecting insecure request to HTTPS: %s", request.url)
-                return RedirectResponse(url=str(https_url), status_code=301)
-
         response: Response = await call_next(request)
-        self._inject_headers(response)
+        self._apply(response)
         return response
 
-    # ── Header injection ──────────────────────────────────────────────────────
-    def _inject_headers(self, response: Response) -> None:
+    @staticmethod
+    def _apply(response: Response) -> None:
         h = response.headers
 
-        # Never override headers the route handler has already set explicitly.
-        if "strict-transport-security" not in h and self._settings.https_behind_proxy:
-            h.append("strict-transport-security", self._hsts_value)
+        # Transport security (only meaningful over TLS; harmless over HTTP in dev)
+        if settings.COOKIE_SECURE:
+            h["Strict-Transport-Security"] = _HSTS
 
-        if "content-security-policy" not in h:
-            h.append("content-security-policy", self._csp_value)
+        # Content type / framing / sniffing
+        h["X-Content-Type-Options"] = "nosniff"
+        h["X-Frame-Options"] = "DENY"
+        h["Content-Security-Policy"] = _CSP
+        h["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        h["Permissions-Policy"] = _PERMISSIONS
 
-        if "x-content-type-options" not in h:
-            h.append("x-content-type-options", "nosniff")
+        # Cache — API responses must not be cached by intermediaries
+        if "Cache-Control" not in h:
+            h["Cache-Control"] = "no-store"
 
-        if "x-frame-options" not in h:
-            h.append("x-frame-options", "DENY")
+        # Cross-origin isolation
+        h["Cross-Origin-Opener-Policy"] = "same-origin"
+        h["Cross-Origin-Resource-Policy"] = "same-origin"
+        h["Cross-Origin-Embedder-Policy"] = "require-corp"
 
-        if "referrer-policy" not in h:
-            h.append("referrer-policy", "strict-origin-when-cross-origin")
-
-        if "permissions-policy" not in h:
-            h.append(
-                "permissions-policy",
-                "geolocation=(), microphone=(), camera=(), payment=()",
-            )
-
-        # Conservative cache default; individual routes can override.
-        if "cache-control" not in h:
-            h.append("cache-control", "no-store")
+        # Remove headers that leak server implementation details
+        # MutableHeaders.__delitem__ raises KeyError on missing key, so check first.
+        if "Server" in h:
+            del h["Server"]
+        if "X-Powered-By" in h:
+            del h["X-Powered-By"]

@@ -1,8 +1,11 @@
-"""Application settings – validated at startup via pydantic-settings."""
+"""
+Application configuration — single canonical settings module.
+All values read from environment variables; validated at startup.
+"""
 
 from __future__ import annotations
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,53 +14,57 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
     )
 
-    # ── App ───────────────────────────────────────────────────────────────────
-    app_env: str = "development"
-    secret_key: str
-    algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
-    refresh_token_expire_days: int = 7
+    # ------------------------------------------------------------------
+    # Core security
+    # ------------------------------------------------------------------
+    SECRET_KEY: str = Field(
+        ...,
+        description="HMAC signing key for CSRF tokens, session cookies, etc. "
+        "Must be >=32 random bytes in production.",
+    )
 
-    # ── Database ──────────────────────────────────────────────────────────────
-    database_url: str
+    COOKIE_SECURE: bool = Field(
+        default=True,
+        description="Set Secure flag on cookies and emit HSTS header. "
+        "Set to False only in local HTTP development.",
+    )
 
-    # ── Redis ─────────────────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
+    # ------------------------------------------------------------------
+    # CORS / CSRF origin allow-list
+    # ------------------------------------------------------------------
+    ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=list,
+        description="List of allowed request origins for CORS and CSRF origin check. "
+        "e.g. ['https://app.example.com']",
+    )
 
-    # ── Rate-limit thresholds (per-account, sliding-window) ───────────────────
-    ratelimit_register_max: int = 5
-    ratelimit_register_window_seconds: int = 3600
+    # ------------------------------------------------------------------
+    # Application
+    # ------------------------------------------------------------------
+    APP_ENV: str = Field(
+        default="production",
+        description="'development' | 'staging' | 'production'",
+    )
+    DEBUG: bool = Field(default=False)
 
-    ratelimit_login_max: int = 10
-    ratelimit_login_window_seconds: int = 900
+    # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+    DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/appdb",
+    )
 
-    ratelimit_content_create_max: int = 60
-    ratelimit_content_create_window_seconds: int = 3600
-
-    @field_validator("secret_key")
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
+    @field_validator("SECRET_KEY")
     @classmethod
-    def _secret_key_strength(cls, v: str) -> str:
+    def secret_key_must_be_strong(cls, v: str) -> str:
         if len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters")
         return v
 
-    @model_validator(mode="after")
-    def _no_default_secret_in_prod(self) -> "Settings":
-        if self.app_env == "production" and "CHANGE_ME" in self.secret_key:
-            raise ValueError("SECRET_KEY must not be the default value in production")
-        return self
 
-
-def get_settings() -> Settings:
-    """Return a cached Settings instance (FastAPI dependency-safe)."""
-    return _settings
-
-
-# Module-level singleton; fail fast at import time if env is misconfigured.
-_settings = Settings(
-    secret_key="CHANGE_ME_IN_PRODUCTION_use_openssl_rand_hex_32_dev_only",
-    database_url="sqlite+aiosqlite:///./dev.db",
-)
+settings = Settings()
