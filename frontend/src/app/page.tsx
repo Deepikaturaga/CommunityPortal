@@ -1,3 +1,7 @@
 export default function HomePage() {
-  return <main><h1>Discussion Board</h1></main>;
+  return (
+    <main>
+      <h1>KB Management</h1>
+    </main>
+  );
 }
