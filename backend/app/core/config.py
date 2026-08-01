@@ -10,19 +10,20 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/discussion_dev"
+    database_url: str = "sqlite+aiosqlite:///./dev.db"
 
-    # JWT
-    secret_key: str = "change-me-in-production-min-32-chars-long!!"
+    # Security
+    secret_key: str = "changeme-dev-secret-32-bytes-long!!"
+    access_token_expire_minutes: int = 30
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
 
-    # Reply limits
-    reply_min_length: int = 1
-    reply_max_length: int = 10_000
+    # Runtime
+    environment: str = "development"
+    debug: bool = False
 
 
 @lru_cache

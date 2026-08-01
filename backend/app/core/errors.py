@@ -1,38 +1,44 @@
-"""Standardised error response shapes and exception handlers."""
-
 from __future__ import annotations
 
-from fastapi import Request, status
-from fastapi.exceptions import RequestValidationError
+from http import HTTPStatus
+
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    field: str | None = None
+class AppError(Exception):
+    """Base application error."""
+
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
 
 
-class ErrorResponse(BaseModel):
-    errors: list[ErrorDetail]
+class ConflictError(AppError):
+    def __init__(self, message: str = "Resource conflict") -> None:
+        super().__init__(message, status_code=HTTPStatus.CONFLICT)
 
 
-def _err(code: str, message: str, field: str | None = None) -> dict:  # type: ignore[type-arg]
-    return {"errors": [{"code": code, "message": message, "field": field}]}
+class NotFoundError(AppError):
+    def __init__(self, message: str = "Resource not found") -> None:
+        super().__init__(message, status_code=HTTPStatus.NOT_FOUND)
 
 
-async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    errors = []
-    for e in exc.errors():
-        loc = e.get("loc", ())
-        field = ".".join(str(x) for x in loc[1:]) if len(loc) > 1 else None
-        errors.append(
-            {"code": "validation_error", "message": e["msg"], "field": field}
-        )
+class ForbiddenError(AppError):
+    def __init__(self, message: str = "Forbidden") -> None:
+        super().__init__(message, status_code=HTTPStatus.FORBIDDEN)
+
+
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"errors": errors},
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+    )
+
+
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+        content={"detail": "An unexpected error occurred."},
     )
