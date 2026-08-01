@@ -1,6 +1,5 @@
+"""Application settings — validated at startup via pydantic-settings."""
 from __future__ import annotations
-
-from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,19 +12,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///./dev.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
+    SECRET_KEY: str  # no default — must be set in env; validated at startup
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ENVIRONMENT: str = "development"
 
-    # Security
-    secret_key: str = "changeme-dev-secret-32-bytes-long!!"
-    access_token_expire_minutes: int = 30
-    algorithm: str = "HS256"
-
-    # Runtime
-    environment: str = "development"
-    debug: bool = False
+    # Prevent SQLAlchemy echo in production
+    @property
+    def db_echo(self) -> bool:
+        return self.ENVIRONMENT == "development"
 
 
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+settings = Settings()  # type: ignore[call-arg]

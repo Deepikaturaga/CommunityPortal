@@ -1,79 +1,90 @@
-"""
-COMP-006 Moderation Report Intake — HTTP router (IF-008).
+"""Moderation review queue & actions router (TASK-037 / IF-009).
 
-Routes
-------
-POST   /moderation/reports          → 201 ReportResponse  | 409 on duplicate
-GET    /moderation/reports          → 200 ReportListResponse
-GET    /moderation/reports/{id}     → 200 ReportResponse  | 404
+Endpoints:
+  GET  /api/v1/moderation/queue          — list flagged/pending content items
+  POST /api/v1/moderation/queue/{id}/actions — apply lock / hide / delete
+
+Both endpoints require the `moderator` or `admin` role (403 otherwise — AC-014.3).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.services.moderation.reports import ModerationReportService
+from app.core.security import TokenPayload, require_moderator
+from app.models.content import ContentStatus
+from app.services.moderation.actions import (
+    ContentNotFoundError,
+    InvalidTransitionError,
+    apply_action,
+    list_queue,
+)
 from app.services.moderation.schemas import (
-    ReportCreate,
-    ReportListResponse,
-    ReportResponse,
+    ModerationActionRequest,
+    ModerationActionResponse,
+    QueuePage,
 )
 
-router = APIRouter(prefix="/moderation/reports", tags=["moderation"])
+router = APIRouter(prefix="/moderation", tags=["moderation"])
 
 
-def _svc(db: AsyncSession = Depends(get_db)) -> ModerationReportService:
-    return ModerationReportService(db)
+@router.get(
+    "/queue",
+    response_model=QueuePage,
+    status_code=status.HTTP_200_OK,
+    summary="List moderation review queue",
+    description=(
+        "Returns a paginated list of content items with the given status "
+        "(default: flagged). Requires moderator or admin role."
+    ),
+)
+async def get_queue(
+    queue_status: ContentStatus = Query(
+        default=ContentStatus.flagged,
+        alias="status",
+        description="Filter by content status",
+    ),
+    page: int = Query(default=1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    _moderator: TokenPayload = Depends(require_moderator),
+    db: AsyncSession = Depends(get_db),
+) -> QueuePage:
+    return await list_queue(db, status=queue_status, page=page, page_size=page_size)
 
 
 @router.post(
-    "",
-    response_model=ReportResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Submit a moderation report (IF-008 / COMP-006)",
-    responses={
-        409: {"description": "Duplicate report for this (reporter_id, target_id) pair."},
-        403: {"description": "Reporter and target must be different users."},
-    },
-)
-async def create_report(
-    payload: ReportCreate,
-    svc: ModerationReportService = Depends(_svc),
-) -> ReportResponse:
-    """
-    Submit a new moderation report.
-
-    Returns **HTTP 409** when a report from the same ``reporter_id``
-    against the same ``target_id`` already exists (AC-015.2).
-    """
-    return await svc.create_report(payload)
-
-
-@router.get(
-    "",
-    response_model=ReportListResponse,
+    "/queue/{content_id}/actions",
+    response_model=ModerationActionResponse,
     status_code=status.HTTP_200_OK,
-    summary="List moderation reports",
+    summary="Apply a moderation action",
+    description=(
+        "Issue a lock, hide, or delete command to a content item (COMP-003). "
+        "Writes an immutable audit record on every action (AC-014.3/4). "
+        "Requires moderator or admin role."
+    ),
 )
-async def list_reports(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    svc: ModerationReportService = Depends(_svc),
-) -> ReportListResponse:
-    items, total = await svc.list_reports(offset=offset, limit=limit)
-    return ReportListResponse(items=items, total=total, limit=limit, offset=offset)
-
-
-@router.get(
-    "/{report_id}",
-    response_model=ReportResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Fetch a single moderation report",
-    responses={404: {"description": "Report not found."}},
-)
-async def get_report(
-    report_id: str,
-    svc: ModerationReportService = Depends(_svc),
-) -> ReportResponse:
-    return await svc.get_report(report_id)
+async def post_action(
+    content_id: str,
+    body: ModerationActionRequest,
+    moderator: TokenPayload = Depends(require_moderator),
+    db: AsyncSession = Depends(get_db),
+) -> ModerationActionResponse:
+    try:
+        return await apply_action(
+            db,
+            content_id=content_id,
+            moderator_id=moderator.sub,
+            action=body.action,
+            reason=body.reason,
+        )
+    except ContentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc

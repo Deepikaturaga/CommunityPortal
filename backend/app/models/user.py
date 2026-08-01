@@ -1,13 +1,19 @@
-"""User ORM model."""
+"""User ORM model (established by PHASE-022 / TASK-035)."""
 from __future__ import annotations
 
+import enum
 import uuid
 
-from sqlalchemy import Boolean, Enum, String
+from sqlalchemy import Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
-from app.models.enums import UserRole
+from app.models.base import Base
+
+
+class UserRole(str, enum.Enum):
+    user = "user"
+    moderator = "moderator"
+    admin = "admin"
 
 
 class User(Base):
@@ -16,16 +22,14 @@ class User(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, name="userrole"), nullable=False, default=UserRole.VIEWER
+        Enum(UserRole), nullable=False, default=UserRole.user
     )
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    # Relationships
-    taxonomy_terms: Mapped[list["TaxonomyTerm"]] = relationship(  # noqa: F821
-        "TaxonomyTerm", back_populates="created_by_user", lazy="select"
+    # back-references populated by child models
+    moderation_audit_records: Mapped[list["app.models.moderation.ModerationAuditRecord"]] = (  # type: ignore[name-defined]
+        relationship("ModerationAuditRecord", back_populates="moderator", lazy="raise")
     )

@@ -1,6 +1,4 @@
-"""
-Pydantic v2 schemas for COMP-006 report intake (IF-008).
-"""
+"""Pydantic v2 schemas for the moderation review queue and actions (IF-009)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,60 +6,80 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from app.services.moderation.models import ReportReason, ReportStatus
+from app.models.content import ContentStatus
+from app.models.moderation import ModerationAction
 
-# ── Request ───────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Request schemas
+# ---------------------------------------------------------------------------
 
-_UUIDStr = Annotated[str, StringConstraints(min_length=36, max_length=36)]
-
-
-class ReportCreate(BaseModel):
-    """Body for POST /moderation/reports (IF-008)."""
-
-    reporter_id: _UUIDStr = Field(
-        ...,
-        description="UUID of the user filing the report.",
-    )
-    target_id: _UUIDStr = Field(
-        ...,
-        description="UUID of the user or content being reported.",
-    )
-    reason: ReportReason = Field(
-        ...,
-        description="Category that best describes the violation.",
-    )
-    description: str | None = Field(
-        default=None,
-        max_length=2000,
-        description="Optional free-text elaboration (max 2 000 chars).",
-    )
+ReasonStr = Annotated[
+    str | None,
+    StringConstraints(max_length=1024),
+]
 
 
-# ── Response ──────────────────────────────────────────────────────────────────
+class ModerationActionRequest(BaseModel):
+    """Body for POST /moderation/queue/{content_id}/actions."""
+
+    action: ModerationAction
+    reason: ReasonStr = None
 
 
-class ReportResponse(BaseModel):
-    """Serialised ModerationReport returned to callers."""
+class QueueListParams(BaseModel):
+    """Query-parameter schema for GET /moderation/queue."""
 
-    id: str
-    reporter_id: str
-    target_id: str
-    reason: ReportReason
-    description: str | None
-    status: ReportStatus
-    reviewed_by: str | None
-    reviewer_note: str | None
-    created_at: datetime
-    updated_at: datetime
+    status: ContentStatus = ContentStatus.flagged
+    page: Annotated[int, Field(ge=1)] = 1
+    page_size: Annotated[int, Field(ge=1, le=100)] = 20
+
+
+# ---------------------------------------------------------------------------
+# Response schemas
+# ---------------------------------------------------------------------------
+
+
+class ContentSummary(BaseModel):
+    """Lightweight content item returned in the queue listing."""
 
     model_config = {"from_attributes": True}
 
+    id: str
+    title: str
+    author_id: str
+    status: ContentStatus
+    created_at: datetime
+    updated_at: datetime
 
-# ── Paginated list ────────────────────────────────────────────────────────────
 
+class QueuePage(BaseModel):
+    """Paginated queue listing response."""
 
-class ReportListResponse(BaseModel):
-    items: list[ReportResponse]
+    items: list[ContentSummary]
     total: int
-    limit: int
-    offset: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class AuditRecordOut(BaseModel):
+    """Single audit record returned after a moderation action."""
+
+    model_config = {"from_attributes": True}
+
+    id: str
+    content_id: str
+    moderator_id: str
+    action: ModerationAction
+    reason: str | None
+    previous_status: str
+    new_status: str
+    created_at: datetime
+
+
+class ModerationActionResponse(BaseModel):
+    """Envelope returned after a successful moderation action."""
+
+    content_id: str
+    new_status: ContentStatus
+    audit_record: AuditRecordOut
